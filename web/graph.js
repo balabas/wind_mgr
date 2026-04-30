@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0004";
+  const GRAPH_VERSION = "20260501-0006";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -282,10 +282,13 @@
     const shouldSettle = Date.now() < _settleAfterMoveUntil;
     if (_forceFrozen || (!topologyChanged && !shouldSettle)) {
       _simulation.stop();
-      _simulation.alpha(0);
+      _simulation.alpha(0).alphaTarget(0);
       nodes.forEach(n => { n.vx = 0; n.vy = 0; });
-    } else if (shouldSettle) {
-      _simulation.alpha(Math.max(_simulation.alpha(), 0.45)).restart();
+    } else {
+      _simulation
+        .alphaTarget(0)
+        .alpha(Math.max(_simulation.alpha(), topologyChanged ? 0.65 : 0.45))
+        .restart();
     }
 
     // ── Edges ──────────────────────────────────────────────────────────
@@ -726,7 +729,7 @@
       _data.nodes.forEach(n => { n.vx = 0; n.vy = 0; });
       renderNodesOnly();
     } else {
-      _simulation.alpha(0.08).restart();
+      _simulation.alphaTarget(0).alpha(0.08).restart();
     }
   }
 
@@ -813,13 +816,15 @@
       _settleAfterMoveUntil = Date.now() + 2500;
     }
     else flushQueuedGraphData();
-    if (!keepFrozen && !_forceFrozen) restartLayout(projectChanged ? 0.65 : 0.3);
+    if (!keepFrozen && !_forceFrozen) restartLayout(projectChanged ? 0.65 : 0.08);
   }
 
   function restartLayout(alpha) {
     if (!_simulation) return;
-    _simulation.alphaTarget(0);
-    _simulation.alpha(Math.max(_simulation.alpha(), alpha)).restart();
+    _simulation
+      .alphaTarget(0)
+      .alpha(Math.max(_simulation.alpha(), alpha))
+      .restart();
   }
 
   function flushQueuedGraphData() {
