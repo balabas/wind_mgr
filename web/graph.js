@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260430-2122";
+  const GRAPH_VERSION = "20260501-0004";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -315,10 +315,18 @@
     nodeEnter.append("rect")
       .attr("class", "node-bg");
 
-    // Thumbnail image (clipped to top portion)
+    // Per-card clip path so thumbnail + overlay respect rounded corners
+    nodeEnter.append("clipPath")
+      .attr("id", d => `card-clip-${d.xid}`)
+      .append("rect")
+        .attr("class", "card-clip-rect")
+        .attr("rx", 8);
+
+    // Thumbnail image clipped to card shape
     nodeEnter.append("image")
       .attr("class", "node-thumb")
-      .attr("preserveAspectRatio", "xMidYMid meet");
+      .attr("preserveAspectRatio", "xMidYMid meet")
+      .attr("clip-path", d => `url(#card-clip-${d.xid})`);
 
     nodeEnter.append("rect")
       .attr("class", "active-overlay");
@@ -329,6 +337,10 @@
       .attr("width", 20).attr("height", 20);
 
     nodeEnter.append("title");
+
+    // Title background bar (path so only bottom corners are rounded)
+    nodeEnter.append("path")
+      .attr("class", "node-title-bg");
 
     // Title
     nodeEnter.append("text")
@@ -365,6 +377,10 @@
       .attr("width", size.w).attr("height", size.h)
       .attr("rx", 8);
 
+    g.select(".card-clip-rect")
+      .attr("x", -hw).attr("y", -hh)
+      .attr("width", size.w).attr("height", size.h);
+
     // Thumbnail
     g.select(".node-thumb")
       .attr("href", d.thumb_url || "")
@@ -387,6 +403,12 @@
       .attr("x", hw - 24)
       .attr("y", hh - 24)
       .style("display", hasIcon ? null : "none");
+
+    // Title background bar — rounded only at bottom, same radius/coords as card
+    const titleBarH = 22, tbr = 8;
+    const tbx0 = -hw, tbx1 = hw, tby0 = hh - titleBarH, tby1 = hh;
+    g.select(".node-title-bg")
+      .attr("d", `M${tbx0},${tby0}H${tbx1}V${tby1 - tbr}Q${tbx1},${tby1} ${tbx1 - tbr},${tby1}H${tbx0 + tbr}Q${tbx0},${tby1} ${tbx0},${tby1 - tbr}Z`);
 
     // Title — center in info bar
     g.select(".node-title")

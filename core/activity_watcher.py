@@ -50,6 +50,7 @@ class ActivityWatcher:
         bus.emit(EVT_FOCUS_CHANGED, new_xid=self._active_xid, old_xid=None)
         log.info("ActivityWatcher started, tracking %d existing windows",
                  len(self._registry.all_alive()))
+        GLib.timeout_add(1000, self._poll_titles)
 
     def _should_track(self, window: Wnck.Window) -> bool:
         if window.get_window_type() in _SKIP_TYPES:
@@ -127,6 +128,27 @@ class ActivityWatcher:
         record = self._registry.get(window.get_xid())
         if record and self._sync_geometry(window, record):
             bus.emit(EVT_GRAPH_UPDATED)
+
+    def _poll_titles(self) -> bool:
+        if self._screen is None:
+            return False
+        self._screen.force_update()
+        changed = False
+        for window in self._screen.get_windows():
+            if not self._should_track(window):
+                continue
+            xid = window.get_xid()
+            record = self._registry.get(xid)
+            if record is None:
+                continue
+            new_title = window.get_name() or ""
+            if record.title != new_title:
+                record.title = new_title
+                bus.emit(EVT_TITLE_CHANGED, xid=xid, new_title=new_title)
+                changed = True
+        if changed:
+            bus.emit(EVT_GRAPH_UPDATED)
+        return True  # repeat
 
     def _build_record(self, window: Wnck.Window,
                       parent_xid: int | None) -> WindowRecord:

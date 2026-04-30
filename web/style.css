@@ -182,14 +182,15 @@ svg#graph {
 .node-info {
   padding: 4px 6px 5px;
 }
+.node-title-bg {
+  fill: rgba(0, 0, 0, 0.62);
+  pointer-events: none;
+}
 .node-title {
   font-size: 11px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #e0e0e0;
-  line-height: 1.3;
+  fill: #e8e8e8;
+  pointer-events: none;
 }
 .node-breadcrumb {
   font-size: 9px;
