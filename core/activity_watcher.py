@@ -62,7 +62,12 @@ class ActivityWatcher:
             record = self._build_record(window, parent_xid=None)
             record.is_alive = True
             self._registry.add(record)
-            window.connect("name-changed", self._on_name_changed)
+        else:
+            record = self._registry.get(xid)
+            if record:
+                self._sync_geometry(window, record)
+        window.connect("name-changed", self._on_name_changed)
+        window.connect("geometry-changed", self._on_geometry_changed)
 
     def _on_window_opened(self, screen: Wnck.Screen, window: Wnck.Window) -> None:
         if not self._should_track(window):
@@ -83,6 +88,7 @@ class ActivityWatcher:
         record = self._build_record(window, parent_xid=parent_xid)
         self._registry.add(record)
         window.connect("name-changed", self._on_name_changed)
+        window.connect("geometry-changed", self._on_geometry_changed)
         bus.emit(EVT_WINDOW_OPENED, record=record)
         bus.emit(EVT_GRAPH_UPDATED)
         log.debug("Window opened xid=%d title=%r parent=%s", xid, record.title, parent_xid)
@@ -117,10 +123,15 @@ class ActivityWatcher:
             bus.emit(EVT_TITLE_CHANGED, xid=xid, new_title=new_title)
             bus.emit(EVT_GRAPH_UPDATED)
 
+    def _on_geometry_changed(self, window: Wnck.Window) -> None:
+        record = self._registry.get(window.get_xid())
+        if record and self._sync_geometry(window, record):
+            bus.emit(EVT_GRAPH_UPDATED)
+
     def _build_record(self, window: Wnck.Window,
                       parent_xid: int | None) -> WindowRecord:
         app = window.get_application()
-        return WindowRecord.make(
+        record = WindowRecord.make(
             xid=window.get_xid(),
             title=window.get_name() or "",
             app_name=app.get_name() if app else "",
@@ -129,10 +140,22 @@ class ActivityWatcher:
             wm_class_group=window.get_class_group_name() or "",
             parent_xid=parent_xid,
         )
+        self._sync_geometry(window, record)
+        return record
 
     @property
     def active_xid(self) -> int | None:
         return self._active_xid
+
+    def _sync_geometry(self, window: Wnck.Window, record: WindowRecord) -> bool:
+        _x, _y, width, height = window.get_geometry()
+        if width <= 0 or height <= 0:
+            return False
+        old = (record.metadata.get("window_width"), record.metadata.get("window_height"))
+        new = (int(width), int(height))
+        record.metadata["window_width"] = new[0]
+        record.metadata["window_height"] = new[1]
+        return old != new
 
 
 def _is_self_window(window: Wnck.Window) -> bool:

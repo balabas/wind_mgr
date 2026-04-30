@@ -77,13 +77,24 @@ svg#graph {
   stroke: #4a90d9;
   stroke-width: 3.5;
 }
+.active-overlay {
+  fill: #00d4ff;
+  opacity: 0;
+  pointer-events: none;
+}
 .node-g.active-window .node-bg {
   stroke: #00d4ff;
   filter: drop-shadow(0 0 12px rgba(0,212,255,0.65));
   animation: active-window-flash 2.4s ease-in-out infinite;
 }
+.node-g.active-window .active-overlay {
+  animation: active-overlay-flash 2.4s ease-in-out infinite;
+}
 .node-g.active-window-new .node-bg {
   animation-name: active-window-flash-start;
+}
+.node-g.active-window-new .active-overlay {
+  animation-name: active-overlay-flash-start;
 }
 .node-g.selected .node-bg {
   stroke: #f39c12;
@@ -116,6 +127,14 @@ svg#graph {
     stroke-width: 2.5;
     filter: drop-shadow(0 0 7px rgba(0,212,255,0.45));
   }
+}
+@keyframes active-overlay-flash {
+  0%, 100% { opacity: 0.08; }
+  50%      { opacity: 0.28; }
+}
+@keyframes active-overlay-flash-start {
+  0%, 100% { opacity: 0.32; }
+  50%      { opacity: 0.08; }
 }
 @keyframes node-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.8); }

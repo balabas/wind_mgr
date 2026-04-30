@@ -26,6 +26,7 @@ class JSBridge:
         self._webview: WebKit2.WebView | None = None
         self._auto_refresh = False
         self._auto_refresh_tag: int | None = None
+        self._graph_update_tag: int | None = None
 
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
 
@@ -132,6 +133,10 @@ class JSBridge:
                 "tab_title": r.metadata.get("tab_title", ""),
                 "domain": r.metadata.get("domain", ""),
                 "project_name": r.metadata.get("project_name", ""),
+                "active_file": r.metadata.get("active_file", ""),
+                "active_directory": r.metadata.get("active_directory", ""),
+                "window_width": r.metadata.get("window_width", 0),
+                "window_height": r.metadata.get("window_height", 0),
                 "project_id": pid,
                 "parent_xid": r.parent_xid,
                 "thumb_url": self._capture.thumb_url(r.xid),
@@ -275,7 +280,14 @@ class JSBridge:
         return True  # repeat
 
     def _on_graph_updated(self) -> None:
-        GLib.idle_add(self.push_graph)
+        if self._graph_update_tag is not None:
+            GLib.source_remove(self._graph_update_tag)
+        self._graph_update_tag = GLib.timeout_add(250, self._push_graph_debounced)
+
+    def _push_graph_debounced(self) -> bool:
+        self._graph_update_tag = None
+        self.push_graph()
+        return False
 
 
 def _is_self_record(record) -> bool:

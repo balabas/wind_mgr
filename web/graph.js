@@ -12,10 +12,12 @@
   let _initialized = false;
   let _pendingData = null;
   let _projectAnchors = {};
+  let _graphSignature = "";
   let _dragFreeze = false;
   let _forceFrozen = false;
   let _ctrlDown = false;
   let _dragStart = null;
+  let _dragMoved = false;
   let _dragDropHulls = null;
   let _lastMiddleClickAt = 0;
 
@@ -23,29 +25,33 @@
   const THUMB_H = 140;
   const INFO_H  = 0;
   const NODE_H  = THUMB_H + INFO_H;
-  const HW      = NODE_W / 2;   // half-width  = 90
-  const HH      = NODE_H / 2;   // half-height = 70
   const LAYOUT = {
     hullPad: 100,
-    projectMarginX: 220,
-    projectMarginY: 170,
-    projectCellW: 520,
-    projectCellH: 400,
+    hullShape: "cards",
+    projectMarginX: 260,
+    projectMarginY: 220,
+    projectCellW: 720,
+    projectCellH: 540,
     sameProjectLinkDistance: 180,
     crossProjectLinkDistance: 680,
     sameProjectLinkStrength: 0.35,
     crossProjectLinkStrength: 0.01,
     nodeCharge: -400,
     nodeCollideRadius: 120,
+    cardArea: 25200,
+    cardMinWidth: 110,
+    cardMaxWidth: 300,
+    cardMinHeight: 90,
+    cardMaxHeight: 260,
     clusterStrength: 0.18,
-    projectCirclePadding: 260,
-    projectCircleStrength: 0.25,
-    projectRectGap: 180,
-    projectRectStrength: 0.7,
-    foreignCardBoundaryGap: 60,
-    foreignCardBoundaryStrength: 0.55,
-    projectAnchorStrength: 0.08,
-    centerStrength: 0.03,
+    projectCirclePadding: 360,
+    projectCircleStrength: 0.38,
+    projectRectGap: 300,
+    projectRectStrength: 1.05,
+    foreignCardBoundaryGap: 90,
+    foreignCardBoundaryStrength: 0.75,
+    projectAnchorStrength: 0.035,
+    centerStrength: 0.01,
     velocityDecay: 0.65,
     alphaDecay: 0.03,
     fitMarginLeft: 160,
@@ -81,13 +87,6 @@
       .append("path")
         .attr("d", "M0,-4L10,0L0,4")
         .attr("fill", "#777");
-
-    // Clip path for thumbnail rounding (applied in node's local coordinate space)
-    defs.append("clipPath").attr("id", "thumb-clip")
-      .append("rect")
-        .attr("x", -HW).attr("y", -HH)
-        .attr("width", NODE_W).attr("height", THUMB_H)
-        .attr("rx", 6);
 
     _zoom = d3.zoom()
       .scaleExtent([0.08, LAYOUT.maxZoom])
@@ -153,12 +152,15 @@
         _pendingData = data;
         return;
       }
+      const nextSignature = graphSignature(data);
+      const topologyChanged = nextSignature !== _graphSignature;
       _data = data;
+      _graphSignature = nextSignature;
       _nodeMap = {};
       _projectMap = {};
       data.nodes.forEach(n => { _nodeMap[n.xid] = n; });
       data.projects.forEach(p => { _projectMap[p.id] = p; });
-      render();
+      render(topologyChanged);
       updateStatus();
     },
 
@@ -193,8 +195,21 @@
     }
   }
 
+  function graphSignature(data) {
+    const nodes = (data.nodes || [])
+      .filter(n => n.is_alive)
+      .map(n => `${n.xid}:${n.project_id}`)
+      .sort()
+      .join("|");
+    const edges = (data.edges || [])
+      .map(e => `${e.source}->${e.target}`)
+      .sort()
+      .join("|");
+    return `${nodes}#${edges}`;
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
-  function render() {
+  function render(topologyChanged) {
     const nodes = _data.nodes.filter(n => n.is_alive);
     const edges = _data.edges.filter(e => {
       const s = _nodeMap[e.source], t = _nodeMap[e.target];
@@ -226,7 +241,7 @@
         .strength(d => d.source.project_id === d.target.project_id
           ? LAYOUT.sameProjectLinkStrength : LAYOUT.crossProjectLinkStrength))
       .force("charge", d3.forceManyBody().strength(LAYOUT.nodeCharge))
-      .force("collide", d3.forceCollide(LAYOUT.nodeCollideRadius))
+      .force("collide", d3.forceCollide(d => Math.max(LAYOUT.nodeCollideRadius, cardRadius(d))))
       .force("cluster", forceCluster(nodes))
       .force("projectCollide", forceProjectCollide(nodes))
       .force("projectRectCollide", forceProjectRectCollide(nodes))
@@ -237,7 +252,11 @@
       .velocityDecay(LAYOUT.velocityDecay)
       .alphaDecay(LAYOUT.alphaDecay)
       .on("tick", ticked);
-    if (_forceFrozen) _simulation.stop();
+    if (_forceFrozen || !topologyChanged) {
+      _simulation.stop();
+      _simulation.alpha(0);
+      nodes.forEach(n => { n.vx = 0; n.vy = 0; });
+    }
 
     // ── Edges ──────────────────────────────────────────────────────────
     const link = _g.select(".links-layer")
@@ -264,18 +283,15 @@
 
     // Card background
     nodeEnter.append("rect")
-      .attr("class", "node-bg")
-      .attr("x", -HW).attr("y", -HH)
-      .attr("width", NODE_W).attr("height", NODE_H)
-      .attr("rx", 8);
+      .attr("class", "node-bg");
 
     // Thumbnail image (clipped to top portion)
     nodeEnter.append("image")
       .attr("class", "node-thumb")
-      .attr("x", -HW).attr("y", -HH)
-      .attr("width", NODE_W).attr("height", THUMB_H)
-      .attr("preserveAspectRatio", "xMidYMid slice")
-      .attr("clip-path", "url(#thumb-clip)");
+      .attr("preserveAspectRatio", "xMidYMid meet");
+
+    nodeEnter.append("rect")
+      .attr("class", "active-overlay");
 
     // App icon badge
     nodeEnter.append("image")
@@ -299,19 +315,37 @@
     const allNodes = nodeEnter.merge(node);
     allNodes.each(function (d) { renderCard(d3.select(this), d); });
     node.exit().remove();
+    if (!topologyChanged) {
+      renderNodesOnly();
+      renderHulls();
+    }
   }
 
   function renderCard(g, d) {
     g.classed("active-window", d.xid === _data.active_xid)
      .classed("selected",      d.xid === _selectedXid);
 
+    const size = cardSize(d);
+    const hw = size.w / 2, hh = size.h / 2;
     const displayTitle = d.tab_title || d.project_name || d.title;
     const truncTitle = displayTitle.length > 24 ? displayTitle.slice(0, 23) + "…" : displayTitle;
+
+    g.select(".node-bg")
+      .attr("x", -hw).attr("y", -hh)
+      .attr("width", size.w).attr("height", size.h)
+      .attr("rx", 8);
 
     // Thumbnail
     g.select(".node-thumb")
       .attr("href", d.thumb_url || "")
+      .attr("x", -hw).attr("y", -hh)
+      .attr("width", size.w).attr("height", size.h)
       .style("display", d.thumb_url ? null : "none");
+
+    g.select(".active-overlay")
+      .attr("x", -hw).attr("y", -hh)
+      .attr("width", size.w).attr("height", size.h)
+      .attr("rx", 8);
 
     // Thumb placeholder emoji when no image
     // (handled by SVG text fallback if thumb fails — use onerror equivalent via error event)
@@ -320,23 +354,58 @@
     const hasIcon = !!d.icon_url;
     g.select(".node-icon")
       .attr("href", d.icon_url || "")
-      .attr("x", HW - 24)
-      .attr("y", -HH + THUMB_H - 24)
+      .attr("x", hw - 24)
+      .attr("y", hh - 24)
       .style("display", hasIcon ? null : "none");
 
     // Title — center in info bar
     g.select(".node-title")
-      .attr("y", HH - 8)
+      .attr("y", hh - 8)
       .text(truncTitle);
 
     // Breadcrumb
     const bc = d.breadcrumb || "";
     g.select(".node-breadcrumb")
-      .attr("y", HH - 3)
+      .attr("y", hh - 3)
       .text(bc)
       .style("display", "none");
 
-    g.select("title").text(displayTitle || d.title || `Window ${d.xid}`);
+    const hoverLines = [
+      displayTitle || d.title || `Window ${d.xid}`,
+      d.active_file ? `File: ${d.active_file}` : "",
+      d.active_directory ? `Directory: ${d.active_directory}` : "",
+    ].filter(Boolean);
+    g.select("title").text(hoverLines.join("\n"));
+  }
+
+  function cardSize(d) {
+    const rawW = Number(d.window_width) || NODE_W;
+    const rawH = Number(d.window_height) || NODE_H;
+    const ratio = Math.max(0.35, Math.min(3.8, rawW / rawH));
+    let h = Math.sqrt(LAYOUT.cardArea / ratio);
+    let w = h * ratio;
+
+    const shrink = Math.min(LAYOUT.cardMaxWidth / w, LAYOUT.cardMaxHeight / h);
+    if (shrink < 1) {
+      w *= shrink;
+      h *= shrink;
+    }
+
+    const grow = Math.max(LAYOUT.cardMinWidth / w, LAYOUT.cardMinHeight / h);
+    if (grow > 1) {
+      w *= grow;
+      h *= grow;
+    }
+
+    return {
+      w: Math.max(1, Math.min(LAYOUT.cardMaxWidth, w)),
+      h: Math.max(1, Math.min(LAYOUT.cardMaxHeight, h)),
+    };
+  }
+
+  function cardRadius(d) {
+    const size = cardSize(d);
+    return Math.hypot(size.w, size.h) / 2;
   }
 
   function ticked() {
@@ -369,14 +438,18 @@
       const proj = _projectMap[pid] || { id: pid, name: pid, color: "#888" };
       const pts = nodes.flatMap(n => {
         const x = n.x || 0, y = n.y || 0, pad = LAYOUT.hullPad;
-        return [[x-pad,y-pad],[x+pad,y-pad],[x+pad,y+pad],[x-pad,y+pad]];
+        const size = cardSize(n), hw = size.w / 2, hh = size.h / 2;
+        return [[x-hw-pad,y-hh-pad],[x+hw+pad,y-hh-pad],[x+hw+pad,y+hh+pad],[x-hw-pad,y+hh+pad]];
       });
       const hull = d3.polygonHull(pts);
-      return { pid, proj, hull, nodes,
+      const path = LAYOUT.hullShape === "cards"
+        ? nodes.map(n => cardRectPath(n, LAYOUT.hullPad)).join("")
+        : (hull ? "M" + hull.join("L") + "Z" : "");
+      return { pid, proj, hull, path, nodes,
                cx: d3.mean(nodes, n => n.x),
                cy: d3.mean(nodes, n => n.y),
                labelY: d3.min(pts, p => p[1]) - LAYOUT.groupLabelGap };
-    }).filter(d => d.hull);
+    }).filter(d => d.path);
 
     const hulls = _g.select(".hulls-layer")
       .selectAll(".hull-group").data(hullData, d => d.pid);
@@ -387,7 +460,7 @@
 
     const all = enter.merge(hulls);
     all.select(".cluster-hull")
-      .attr("d", d => "M" + d.hull.join("L") + "Z")
+      .attr("d", d => d.path)
       .attr("fill", d => d.proj.color)
       .attr("stroke", d => d.proj.color);
 
@@ -402,6 +475,12 @@
 
     hulls.exit().remove();
     labels.exit().remove();
+  }
+
+  function cardRectPath(d, pad) {
+    const x = d.x || 0, y = d.y || 0;
+    const size = cardSize(d), hw = size.w / 2 + pad, hh = size.h / 2 + pad;
+    return `M${x - hw},${y - hh}H${x + hw}V${y + hh}H${x - hw}Z`;
   }
 
   // ── Force cluster ─────────────────────────────────────────────────────────
@@ -543,8 +622,8 @@
     return Object.entries(byProject).map(([pid, members]) => {
       const x = d3.mean(members, n => n.x || 0) || 0;
       const y = d3.mean(members, n => n.y || 0) || 0;
-      const r = d3.max(members, n => Math.hypot((n.x || 0) - x, (n.y || 0) - y)) || 0;
-      return { pid, nodes: members, x, y, r: r + 120 };
+      const r = d3.max(members, n => Math.hypot((n.x || 0) - x, (n.y || 0) - y) + cardRadius(n)) || 0;
+      return { pid, nodes: members, x, y, r };
     });
   }
 
@@ -555,10 +634,10 @@
       (byProject[n.project_id] = byProject[n.project_id] || []).push(n);
     });
     return Object.entries(byProject).map(([pid, members]) => {
-      const x0 = d3.min(members, n => (n.x || 0) - margin);
-      const x1 = d3.max(members, n => (n.x || 0) + margin);
-      const y0 = d3.min(members, n => (n.y || 0) - margin);
-      const y1 = d3.max(members, n => (n.y || 0) + margin);
+      const x0 = d3.min(members, n => (n.x || 0) - cardSize(n).w / 2 - margin);
+      const x1 = d3.max(members, n => (n.x || 0) + cardSize(n).w / 2 + margin);
+      const y0 = d3.min(members, n => (n.y || 0) - cardSize(n).h / 2 - margin);
+      const y1 = d3.max(members, n => (n.y || 0) + cardSize(n).h / 2 + margin);
       return {
         pid, nodes: members, x0, x1, y0, y1,
         cx: (x0 + x1) / 2,
@@ -604,14 +683,19 @@
   function dragStarted(e, d) {
     _dragFreeze = eventWantsFreeze(e);
     if (_dragFreeze) _simulation.stop();
-    else if (!e.active) _simulation.alphaTarget(0.3).restart();
     _dragStart = { x: e.x, y: e.y };
+    _dragMoved = false;
     _dragDropHulls = buildDropHulls(d);
     setDragFeedback(d, null);
     d.fx = d.x; d.fy = d.y;
   }
   function dragged(e, d) {
     _dragFreeze = eventWantsFreeze(e);
+    const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
+    if (!_dragMoved && moved >= 8) {
+      _dragMoved = true;
+      if (!_dragFreeze) _simulation.alphaTarget(0.3).restart();
+    }
     if (_dragFreeze) {
       _forceFrozen = true;
       _simulation.stop();
@@ -619,18 +703,27 @@
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
     setDragFeedback(d, findDropProject(e.x, e.y, d));
-    if (_dragFreeze) renderNodesOnly();
+    renderNodesOnly();
+    if (!_dragFreeze) renderHulls();
   }
   function dragEnded(e, d) {
     const wasFrozen = _dragFreeze;
     const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
+    const restore = _dragStart;
     _dragStart = null;
+    _dragMoved = false;
     _dragFreeze = false;
     if (!_ctrlDown && !(e.sourceEvent && e.sourceEvent.ctrlKey)) setForceFrozen(false);
     if (!e.active) _simulation.alphaTarget(0);
     d.fx = null; d.fy = null;
     d.vx = 0; d.vy = 0;
     if (moved < 8) {
+      if (restore) {
+        d.x = restore.x;
+        d.y = restore.y;
+      }
+      stopLayoutMotion();
+      renderNodesOnly();
       clearDragFeedback();
       _dragDropHulls = null;
       return;
@@ -671,10 +764,10 @@
       if (!members.length) return { pid: p.id, hull: null };
       const pad = LAYOUT.hullPad + LAYOUT.foreignCardBoundaryGap;
       const pts = members.flatMap(n => [
-        [(n.x || 0) - pad, (n.y || 0) - pad],
-        [(n.x || 0) + pad, (n.y || 0) - pad],
-        [(n.x || 0) + pad, (n.y || 0) + pad],
-        [(n.x || 0) - pad, (n.y || 0) + pad],
+        [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) - cardSize(n).h / 2 - pad],
+        [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) - cardSize(n).h / 2 - pad],
+        [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) + cardSize(n).h / 2 + pad],
+        [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) + cardSize(n).h / 2 + pad],
       ]);
       return { pid: p.id, hull: d3.polygonHull(pts) };
     });
@@ -714,10 +807,18 @@
 
   // ── Interactions ──────────────────────────────────────────────────────────
   function onNodeClick(d) {
+    stopLayoutMotion();
     _selectedXid = d.xid;
     d3.selectAll(".node-g").classed("selected", false);
     d3.select(`[data-xid="${d.xid}"]`).classed("selected", true);
     sendToBackend({ action: "activate", xid: d.xid });
+  }
+
+  function stopLayoutMotion() {
+    if (!_simulation) return;
+    _simulation.stop();
+    _simulation.alphaTarget(0);
+    _data.nodes.forEach(n => { n.vx = 0; n.vy = 0; });
   }
 
   function toggleProject(pid) {

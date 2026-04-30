@@ -136,8 +136,9 @@ class ScreenshotCapture:
                 if pb is None:
                     result.append(False)
                     return
+                scaled_w, scaled_h = _fit_size(w, h, self._thumb_w, self._thumb_h)
                 scaled = pb.scale_simple(
-                    self._thumb_w, self._thumb_h,
+                    scaled_w, scaled_h,
                     GdkPixbuf.InterpType.BILINEAR,
                 )
                 scaled.savev(str(self.thumb_path(xid)), "png", [], [])
@@ -172,8 +173,7 @@ class ScreenshotCapture:
                 "-video_size", f"{w}x{h}",
                 "-i", f"{display}+{x},{y}",
                 "-vframes", "1",
-                "-vf", f"scale={self._thumb_w}:{self._thumb_h}:force_original_aspect_ratio=increase,"
-                       f"crop={self._thumb_w}:{self._thumb_h}",
+                "-vf", f"scale={self._thumb_w}:{self._thumb_h}:force_original_aspect_ratio=decrease",
                 out,
             ], capture_output=True, timeout=5)
             return proc.returncode == 0
@@ -188,6 +188,11 @@ def _positive_int(value, default: int) -> int:
         return parsed if parsed > 0 else default
     except (TypeError, ValueError):
         return default
+
+
+def _fit_size(width: int, height: int, max_width: int, max_height: int) -> tuple[int, int]:
+    scale = min(max_width / width, max_height / height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
 
 
 def _parse_xwininfo(text: str) -> tuple[int, int, int, int]:

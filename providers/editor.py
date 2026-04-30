@@ -46,8 +46,10 @@ class EditorProvider(Provider):
         elif cls in _JETBRAINS_CLASSES:
             record.metadata["app_type"] = "editor"
             record.metadata["editor_name"] = "PyCharm"
-            project_name = _jetbrains_project_name(record.title)
+            project_name, active_file = _jetbrains_title_parts(record.title)
             record.metadata["project_name"] = f"PyCharm: {project_name}" if project_name else "PyCharm"
+            record.metadata["active_file"] = active_file
+            record.metadata["active_directory"] = project_name
             record.metadata["group_key"] = record.metadata["project_name"]
         elif "dbeaver" in cls:
             record.metadata["app_type"] = "editor"
@@ -63,12 +65,12 @@ class EditorProvider(Provider):
             record.metadata["group_key"] = record.metadata["editor_name"]
 
 
-def _jetbrains_project_name(title: str) -> str:
+def _jetbrains_title_parts(title: str) -> tuple[str, str]:
     title = title.strip()
     m = _JETBRAINS_TITLE_PARTS.match(title)
     if not m:
-        return title
-    return m.group(1).strip()
+        return title, ""
+    return m.group(1).strip(), m.group(2).strip()
 
 
 class TerminalProvider(Provider):

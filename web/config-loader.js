@@ -1,6 +1,9 @@
 (function () {
   "use strict";
 
+  // If Python already injected the config via UserScript, use it directly.
+  if (window.windMgrConfigReady) return;
+
   window.windMgrConfig = {};
   window.windMgrConfigReady = fetch("../config.ini", { cache: "no-store" })
     .then(response => {

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import configparser
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +20,25 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent.parent / "web"
+CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
 INDEX_URI = (WEB_DIR / "index.html").as_uri()
+
+
+def _read_layout_config() -> dict:
+    cfg = configparser.RawConfigParser()
+    cfg.optionxform = str  # preserve camelCase keys
+    cfg.read(CONFIG_PATH)
+    layout: dict = {}
+    if not cfg.has_section("layout"):
+        return layout
+    for key, val in cfg.items("layout"):
+        val = val.strip()
+        try:
+            f = float(val)
+            layout[key] = int(f) if f == int(f) else f
+        except ValueError:
+            layout[key] = val
+    return layout
 
 
 class MainWindow:
@@ -51,6 +71,20 @@ class MainWindow:
 
         self._webview = WebKit2.WebView()
         self._webview.set_settings(settings)
+
+        layout = _read_layout_config()
+        config_js = (
+            "window.windMgrConfig=" + json.dumps({"layout": layout}) + ";"
+            "window.windMgrConfigReady=Promise.resolve(window.windMgrConfig);"
+        )
+        ucm = self._webview.get_user_content_manager()
+        ucm.add_script(WebKit2.UserScript(
+            config_js,
+            WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START,
+            None, None,
+        ))
+
         self._webview.load_uri(INDEX_URI)
         self._webview.connect("load-changed", self._on_load_changed)
 

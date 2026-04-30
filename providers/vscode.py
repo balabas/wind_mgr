@@ -32,4 +32,6 @@ class VSCodeProvider(Provider):
             project_name = title.strip().lstrip("●").strip()
         record.metadata["file_name"] = file_name
         record.metadata["project_name"] = project_name
+        record.metadata["active_file"] = file_name
+        record.metadata["active_directory"] = project_name
         record.metadata["group_key"] = project_name
