@@ -99,7 +99,7 @@ class MainWindow:
         self._build_tray()
 
         # Global hotkey
-        bind_hotkey(self.toggle)
+        self._bind_hotkey()
 
     def _build_tray(self) -> None:
         try:
@@ -120,6 +120,10 @@ class MainWindow:
         item_toggle.connect("activate", lambda _: self.toggle())
         menu.append(item_toggle)
 
+        item_rebind = Gtk.MenuItem(label="Rebind Super+W hotkey")
+        item_rebind.connect("activate", lambda _: self._show_hotkey_dialog())
+        menu.append(item_rebind)
+
         item_sep = Gtk.SeparatorMenuItem()
         menu.append(item_sep)
 
@@ -135,6 +139,53 @@ class MainWindow:
         if event == WebKit2.LoadEvent.FINISHED:
             # Small delay to let D3 initialise before first push
             GLib.timeout_add(300, self._initial_push)
+
+    def _bind_hotkey(self) -> None:
+        bind_hotkey(lambda: GLib.idle_add(self.toggle))
+
+    def _show_hotkey_dialog(self) -> None:
+        dialog = Gtk.Dialog(
+            title="Set wind_mgr hotkey",
+            transient_for=self._win,
+            flags=Gtk.DialogFlags.MODAL,
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        apply_btn = dialog.add_button("Apply", Gtk.ResponseType.OK)
+        apply_btn.set_sensitive(False)
+
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(12)
+
+        label = Gtk.Label(label="Press the new shortcut, then click Apply.")
+        label.set_xalign(0)
+        box.pack_start(label, False, False, 0)
+
+        captured = {"accel": ""}
+        value = Gtk.Label(label="No shortcut captured")
+        value.set_xalign(0)
+        box.pack_start(value, False, False, 0)
+
+        def _on_key(_widget, event) -> bool:
+            accel = Gtk.accelerator_name(event.keyval, event.state & Gtk.accelerator_get_default_mod_mask())
+            if not accel or accel in {"Escape", "Return", "KP_Enter"}:
+                return False
+            captured["accel"] = accel
+            value.set_text(accel)
+            apply_btn.set_sensitive(True)
+            return True
+
+        dialog.connect("key-press-event", _on_key)
+        dialog.show_all()
+        response = dialog.run()
+        accel = captured["accel"]
+        dialog.destroy()
+
+        if response == Gtk.ResponseType.OK and accel:
+            if bind_hotkey(lambda: GLib.idle_add(self.toggle), accel):
+                log.info("Hotkey changed to %s", accel)
+            else:
+                log.warning("Could not bind selected hotkey: %s", accel)
 
     def _initial_push(self) -> bool:
         self._bridge.push_graph()
@@ -178,7 +229,7 @@ class MainWindow:
             self._visible = False
 
     def toggle(self) -> None:
-        if self._visible:
+        if self._win and self._win.get_visible():
             self.hide()
         else:
             self.show()
