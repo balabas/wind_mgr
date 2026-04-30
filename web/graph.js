@@ -11,6 +11,7 @@
   let _selectedXid = null;
   let _initialized = false;
   let _pendingData = null;
+  let _projectAnchors = {};
 
   const NODE_W  = 180;
   const THUMB_H = 112;
@@ -118,11 +119,14 @@
       return s && t && s.is_alive && t.is_alive;
     });
 
-    // Preserve existing positions
+    _projectAnchors = computeProjectAnchors(nodes);
+
+    // Preserve existing positions, but drop old velocity so refreshes do not
+    // keep reintroducing drift into a newly started simulation.
     nodes.forEach(n => {
       const sel = _g.select(`[data-xid="${n.xid}"]`);
       const old = sel.node() ? sel.datum() : null;
-      if (old) { n.x = old.x; n.y = old.y; n.vx = old.vx; n.vy = old.vy; }
+      if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; }
     });
 
     const xidToNode = {};
@@ -138,7 +142,10 @@
       .force("charge", d3.forceManyBody().strength(-400))
       .force("collide", d3.forceCollide(120))
       .force("cluster", forceCluster(nodes))
-      .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2).strength(0.05))
+      .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(0.08))
+      .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(0.08))
+      .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2).strength(0.03))
+      .velocityDecay(0.65)
       .alphaDecay(0.03)
       .on("tick", ticked);
 
@@ -301,8 +308,30 @@
   }
 
   // ── Force cluster ─────────────────────────────────────────────────────────
+  function computeProjectAnchors(nodes) {
+    const ids = Array.from(new Set(nodes.map(n => n.project_id))).sort();
+    const anchors = {};
+    if (!ids.length) return anchors;
+
+    const cols = Math.ceil(Math.sqrt(ids.length));
+    const rows = Math.ceil(ids.length / cols);
+    const marginX = 180, marginY = 150;
+    const width = Math.max(1, window.innerWidth - marginX * 2);
+    const height = Math.max(1, window.innerHeight - marginY * 2);
+
+    ids.forEach((pid, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      anchors[pid] = {
+        x: marginX + width * (col + 0.5) / cols,
+        y: marginY + height * (row + 0.5) / rows,
+      };
+    });
+    return anchors;
+  }
+
   function forceCluster(nodes) {
-    const strength = 0.12;
+    const strength = 0.18;
     return function force(alpha) {
       const centroids = {}, counts = {};
       nodes.forEach(n => {

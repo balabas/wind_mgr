@@ -183,14 +183,18 @@ class JSBridge:
 
     def _activate_window(self, xid: int) -> None:
         import gi
+        gi.require_version("Gtk", "3.0")
         gi.require_version("Wnck", "3.0")
-        from gi.repository import Wnck
+        from gi.repository import Gtk, Wnck
         screen = Wnck.Screen.get_default()
         screen.force_update()
         for w in screen.get_windows():
             if w.get_xid() == xid:
-                ts = GLib.get_current_time() * 1000
-                w.activate(int(ts))
+                ts = Gtk.get_current_event_time()
+                if not ts:
+                    # Wnck expects a 32-bit X timestamp, not Unix epoch time.
+                    ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
+                w.activate(ts)
                 return
         log.warning("activate: window xid=%d not found", xid)
 
