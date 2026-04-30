@@ -33,11 +33,18 @@ class JSBridge:
         self._active_refresh_tag: int | None = None
         self._bg_refresh_tag: int | None = None
         self._bg_refresh_idx: int = 0
+        self._capture_inflight: set[int] = set()
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
-        self._active_refresh_ms  = int(cfg.getfloat("capture", "active_refresh_interval",  fallback=1.0)  * 1000)
-        self._bg_refresh_ms      = int(cfg.getfloat("capture", "background_refresh_interval", fallback=10.0) * 1000)
+        self._active_refresh_ms = max(
+            100,
+            int(cfg.getfloat("capture", "active_refresh_interval", fallback=1.0) * 1000),
+        )
+        self._bg_refresh_ms = max(
+            1000,
+            int(cfg.getfloat("capture", "background_refresh_interval", fallback=10.0) * 1000),
+        )
 
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
 
@@ -46,6 +53,7 @@ class JSBridge:
         ucm = webview.get_user_content_manager()
         ucm.register_script_message_handler("api")
         ucm.connect("script-message-received::api", self._on_js_message)
+        self._start_thumbnail_refresh()
 
         # Forward JS console.log/warn/error to Python log
         _console_js = (
@@ -219,8 +227,7 @@ class JSBridge:
             elif action == "rename_project":
                 self._rename_project(msg["project_id"], msg["name"])
             elif action == "refresh_thumb":
-                self._capture.capture_async(msg["xid"],
-                                            callback=lambda ok: self.push_graph() if ok else None)
+                self._capture_one(int(msg["xid"]))
             elif action == "refresh_all_thumbs":
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
@@ -299,6 +306,52 @@ class JSBridge:
         self._graph_update_tag = None
         self.push_graph()
         return False
+
+    def _start_thumbnail_refresh(self) -> None:
+        if self._active_refresh_tag is None:
+            self._active_refresh_tag = GLib.timeout_add(
+                self._active_refresh_ms, self._refresh_active_thumb_tick
+            )
+        if self._bg_refresh_tag is None:
+            self._bg_refresh_tag = GLib.timeout_add(
+                self._bg_refresh_ms, self._refresh_background_thumb_tick
+            )
+
+    def _refresh_active_thumb_tick(self) -> bool:
+        xid = self._active_window_xid()
+        if xid is not None:
+            self._capture_one(xid)
+        return True
+
+    def _refresh_background_thumb_tick(self) -> bool:
+        active_xid = self._active_window_xid()
+        records = [
+            r for r in self._reg.all_alive()
+            if not _is_self_record(r) and r.xid != active_xid
+        ]
+        if not records:
+            return True
+        self._bg_refresh_idx %= len(records)
+        record = records[self._bg_refresh_idx]
+        self._bg_refresh_idx = (self._bg_refresh_idx + 1) % len(records)
+        self._capture_one(record.xid)
+        return True
+
+    def _capture_one(self, xid: int) -> None:
+        if xid in self._capture_inflight:
+            return
+        record = self._reg.get(xid)
+        if record is None or not record.is_alive or _is_self_record(record):
+            return
+        self._capture_inflight.add(xid)
+
+        def _done(success: bool) -> None:
+            self._capture_inflight.discard(xid)
+            if success:
+                self.push_graph()
+
+        self._capture.capture_async(xid, callback=_done)
+        GLib.idle_add(self._capture.capture_icon, xid)
 
 
 def _is_self_record(record) -> bool:

@@ -28,6 +28,8 @@
   const LAYOUT = {
     hullPad: 100,
     hullShape: "cards",
+    dropIntoPad: 30,
+    dropNearestDistance: 140,
     projectMarginX: 260,
     projectMarginY: 220,
     projectCellW: 720,
@@ -745,12 +747,15 @@
   function findDropProject(x, y, dragged) {
     const containing = findProjectContainingPoint(x, y, dragged);
     if (containing) return containing;
-    return findNearestProject(x, y, dragged.project_id, 140);
+    return findNearestProject(x, y, dragged.project_id, LAYOUT.dropNearestDistance);
   }
 
   function findProjectContainingPoint(x, y, dragged) {
     const hulls = _dragDropHulls || buildDropHulls(dragged);
     for (const h of hulls) {
+      if (h.rects && h.rects.some(r => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) {
+        return h.pid;
+      }
       if (h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
     }
     return null;
@@ -760,15 +765,21 @@
     return _data.projects.map(p => {
       const members = _data.nodes.filter(n =>
         n.is_alive && n.project_id === p.id && n.xid !== dragged.xid);
-      if (!members.length) return { pid: p.id, hull: null };
-      const pad = LAYOUT.hullPad + LAYOUT.foreignCardBoundaryGap;
+      if (!members.length) return { pid: p.id, hull: null, rects: [] };
+      const pad = LAYOUT.dropIntoPad;
       const pts = members.flatMap(n => [
         [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) - cardSize(n).h / 2 - pad],
         [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) - cardSize(n).h / 2 - pad],
         [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) + cardSize(n).h / 2 + pad],
         [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) + cardSize(n).h / 2 + pad],
       ]);
-      return { pid: p.id, hull: d3.polygonHull(pts) };
+      const rects = members.map(n => ({
+        x0: (n.x || 0) - cardSize(n).w / 2 - pad,
+        x1: (n.x || 0) + cardSize(n).w / 2 + pad,
+        y0: (n.y || 0) - cardSize(n).h / 2 - pad,
+        y1: (n.y || 0) + cardSize(n).h / 2 + pad,
+      }));
+      return { pid: p.id, hull: null, rects };
     });
   }
 
