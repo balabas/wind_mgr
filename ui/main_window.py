@@ -232,6 +232,7 @@ class MainWindow:
 
     def show(self) -> None:
         if self._win:
+            self._bridge.set_ui_visible(True)
             self._win.show_all()
             self._win.deiconify()  # Разворачивает, если было свернуто
             self._win.maximize()
@@ -250,6 +251,7 @@ class MainWindow:
     def hide(self) -> None:
         if self._win:
             self._win.hide()
+            self._bridge.set_ui_visible(False)
             self._visible = False
 
     def toggle(self) -> None:

@@ -9,7 +9,7 @@ import gi
 gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, WebKit2
 
-from core.events import bus, EVT_GRAPH_UPDATED
+from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED
 from core.relationship import RelationshipTree
 
 if TYPE_CHECKING:
@@ -35,12 +35,20 @@ class JSBridge:
         self._bg_refresh_idx: int = 0
         self._capture_inflight: set[int] = set()
         self._before_activate_cb: Callable[[], None] | None = None
+        self._ui_visible = False
+        self._last_graph_push_at = 0.0
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
-        self._active_refresh_ms = max(
-            100,
-            int(cfg.getfloat("capture", "active_refresh_interval", fallback=1.0) * 1000),
+        self._graph_push_min_ms = max(
+            250,
+            int(cfg.getfloat("capture", "graph_push_min_interval", fallback=3.0) * 1000),
+        )
+        active_refresh_seconds = cfg.getfloat("capture", "active_refresh_interval", fallback=0.0)
+        self._active_refresh_ms = (
+            max(100, int(active_refresh_seconds * 1000))
+            if active_refresh_seconds > 0
+            else 0
         )
         self._bg_refresh_ms = max(
             1000,
@@ -48,9 +56,13 @@ class JSBridge:
         )
 
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
+        bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
 
     def set_before_activate_callback(self, callback: Callable[[], None]) -> None:
         self._before_activate_cb = callback
+
+    def set_ui_visible(self, visible: bool) -> None:
+        self._ui_visible = visible
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
@@ -103,6 +115,14 @@ class JSBridge:
         except Exception:
             log.exception("push_graph failed")
 
+    def _schedule_graph_push(self, min_interval_ms: int | None = None) -> None:
+        now = GLib.get_monotonic_time() // 1000
+        min_ms = self._graph_push_min_ms if min_interval_ms is None else min_interval_ms
+        wait_ms = max(0, min_ms - int(now - self._last_graph_push_at))
+        if self._graph_update_tag is not None:
+            return
+        self._graph_update_tag = GLib.timeout_add(wait_ms, self._push_graph_debounced)
+
     def push_active_window(self) -> None:
         if self._webview is None:
             return
@@ -120,6 +140,39 @@ class JSBridge:
             )
         except Exception:
             log.exception("push_active_window failed")
+
+    def push_thumbnail_update(self, xids: list[int]) -> None:
+        if self._webview is None or not xids:
+            return
+        try:
+            items = [
+                {
+                    "xid": xid,
+                    "thumb_url": self._capture.thumb_url(xid),
+                    "icon_url": self._capture.icon_url(xid),
+                }
+                for xid in xids
+                if self._reg.get(xid) is not None
+            ]
+            if not items:
+                return
+            js = (
+                "try{"
+                f"if(window.windMgr)window.windMgr.updateThumbnails({json.dumps(items)});"
+                "else console.warn('windMgr not ready');"
+                "}catch(e){console.error('updateThumbnails error:',e.toString(),e.stack);}"
+            )
+            self._webview.evaluate_javascript(
+                js, -1, None, None, None,
+                self._js_done_cb, None
+            )
+            log.debug("push_thumbnail_update: sent %d thumbnails", len(items))
+        except Exception:
+            log.exception("push_thumbnail_update failed")
+
+    def _on_thumbnail_updated(self, xids: list[int]) -> None:
+        if self._ui_visible:
+            self.push_thumbnail_update(xids)
 
     def _js_done_cb(self, source, result, _user_data) -> None:
         try:
@@ -237,7 +290,8 @@ class JSBridge:
             elif action == "toggle_auto_refresh":
                 self._set_auto_refresh(msg.get("enabled", False))
             elif action == "refresh_active":
-                self.push_active_window()
+                if self._ui_visible:
+                    self.push_active_window()
             elif action == "remove_link":
                 self._remove_link(int(msg["xid"]))
             elif action == "toggle_project":
@@ -305,8 +359,8 @@ class JSBridge:
             remaining[0] -= 1
             log.debug("capture done success=%s remaining=%d", success, remaining[0])
             if remaining[0] <= 0:
-                log.info("All thumbnails captured — pushing graph")
-                self.push_graph()
+                log.info("All thumbnails captured — updating thumbnails")
+                self._on_thumbnail_updated([r.xid for r in records])
 
         for r in records:
             self._capture.capture_async(r.xid, callback=_on_one_done)
@@ -327,17 +381,26 @@ class JSBridge:
         return True  # repeat
 
     def _on_graph_updated(self) -> None:
-        if self._graph_update_tag is not None:
-            GLib.source_remove(self._graph_update_tag)
-        self._graph_update_tag = GLib.timeout_add(250, self._push_graph_debounced)
+        if not self._ui_visible:
+            return
+        self._schedule_graph_push()
 
     def _push_graph_debounced(self) -> bool:
         self._graph_update_tag = None
+        self._last_graph_push_at = GLib.get_monotonic_time() // 1000
         self.push_graph()
         return False
 
+    def _on_focus_changed(self, new_xid: int | None, old_xid: int | None, **_kw) -> None:
+        if self._ui_visible:
+            self.push_active_window()
+        if old_xid is None or old_xid == new_xid:
+            return
+        log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
+        self._capture_one(old_xid)
+
     def _start_thumbnail_refresh(self) -> None:
-        if self._active_refresh_tag is None:
+        if self._active_refresh_ms > 0 and self._active_refresh_tag is None:
             self._active_refresh_tag = GLib.timeout_add(
                 self._active_refresh_ms, self._refresh_active_thumb_tick
             )
@@ -347,6 +410,8 @@ class JSBridge:
             )
 
     def _refresh_active_thumb_tick(self) -> bool:
+        if not self._ui_visible:
+            return True
         xid = self._active_window_xid()
         if xid is not None:
             self._capture_one(xid)
@@ -377,7 +442,7 @@ class JSBridge:
         def _done(success: bool) -> None:
             self._capture_inflight.discard(xid)
             if success:
-                self._on_graph_updated()
+                self._on_thumbnail_updated([xid])
 
         self._capture.capture_async(xid, callback=_done)
         GLib.idle_add(self._capture.capture_icon, xid)

@@ -151,8 +151,6 @@
     });
     document.getElementById("btn-fit").addEventListener("click", fitView);
     document.getElementById("btn-reset").addEventListener("click", resetLayout);
-    window.setInterval(() => sendToBackend({ action: "refresh_active" }), 300);
-
     _initialized = true;
     console.log("wind_mgr init complete graph=" + GRAPH_VERSION);
     if (_pendingData) {
@@ -180,6 +178,7 @@
         _queuedGraphData = data;
         return;
       }
+      data = reuseGraphObjects(data);
       const nextSignature = graphSignature(data);
       const topologyChanged = nextSignature !== _graphSignature;
       _data = data;
@@ -196,6 +195,10 @@
       setActiveWindow(xid);
     },
 
+    updateThumbnails(items) {
+      updateThumbnails(items);
+    },
+
     highlightNode(xid) {
       const g = d3.select(`[data-xid="${xid}"]`);
       g.classed("pulse", false);
@@ -209,6 +212,26 @@
         .on("animationend", function () { d3.select(this).classed("flash", false); });
     },
   };
+
+  function reuseGraphObjects(data) {
+    const oldNodes = _nodeMap || {};
+    data.nodes = (data.nodes || []).map(n => {
+      const old = oldNodes[n.xid];
+      if (!old) return n;
+      const keep = {
+        x: old.x, y: old.y, vx: old.vx, vy: old.vy, fx: old.fx, fy: old.fy,
+      };
+      Object.assign(old, n);
+      if (n.x == null) old.x = keep.x;
+      if (n.y == null) old.y = keep.y;
+      if (n.vx == null) old.vx = keep.vx;
+      if (n.vy == null) old.vy = keep.vy;
+      if (n.fx == null) old.fx = keep.fx;
+      if (n.fy == null) old.fy = keep.fy;
+      return old;
+    });
+    return data;
+  }
 
   function setActiveWindow(xid) {
     if (_data.active_xid === xid) return;
@@ -431,6 +454,23 @@
       d.active_directory ? `Directory: ${d.active_directory}` : "",
     ].filter(Boolean);
     g.select("title").text(hoverLines.join("\n"));
+  }
+
+  function updateThumbnails(items) {
+    (items || []).forEach(item => {
+      const node = _nodeMap[item.xid];
+      if (!node) return;
+      if (Object.prototype.hasOwnProperty.call(item, "thumb_url")) {
+        node.thumb_url = item.thumb_url;
+      }
+      if (Object.prototype.hasOwnProperty.call(item, "icon_url")) {
+        node.icon_url = item.icon_url;
+      }
+      const g = _g.select(".nodes-layer")
+        .selectAll(".node-g")
+        .filter(d => d.xid === item.xid);
+      if (!g.empty()) renderCard(g, node);
+    });
   }
 
   function cardSize(d) {
