@@ -55,7 +55,8 @@ class RelationshipTree:
     def get_project_id(self, record: "WindowRecord") -> str:
         if record.project_id:
             return record.project_id
-        # Walk to root
+        # Walk to root. If an ancestor was manually moved to a group, inherit
+        # that visible group instead of continuing to the ancestor's old root.
         visited: set[int] = set()
         current = record
         while current.parent_xid is not None:
@@ -63,8 +64,10 @@ class RelationshipTree:
                 break
             visited.add(current.xid)
             parent = self._reg.get(current.parent_xid)
-            if parent is None:
+            if parent is None or not parent.is_alive or _is_self_record(parent):
                 break
+            if parent.project_id:
+                return parent.project_id
             current = parent
         return str(current.xid)
 
@@ -79,6 +82,8 @@ class RelationshipTree:
                   "#e74c3c", "#1abc9c", "#9b59b6", "#f39c12"]
         color_idx = 0
         for record in self._reg.all_alive():
+            if _is_self_record(record):
+                continue
             pid = self.get_project_id(record)
             if pid not in seen:
                 root = self._reg.get(int(pid)) if pid.isdigit() else None
@@ -106,3 +111,13 @@ class RelationshipTree:
         if with_children:
             for child_xid in list(record.children_xids):
                 self.move_node(child_xid, target_project_id, with_children=True)
+
+
+def _is_self_record(record: "WindowRecord") -> bool:
+    values = {
+        record.title,
+        record.app_name,
+        record.wm_class,
+        record.wm_class_group,
+    }
+    return any((v or "").strip().lower() == "wind_mgr" for v in values)

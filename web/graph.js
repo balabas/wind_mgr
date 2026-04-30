@@ -17,10 +17,11 @@
   let _ctrlDown = false;
   let _dragStart = null;
   let _dragDropHulls = null;
+  let _lastMiddleClickAt = 0;
 
   const NODE_W  = 180;
-  const THUMB_H = 112;
-  const INFO_H  = 28;
+  const THUMB_H = 140;
+  const INFO_H  = 0;
   const NODE_H  = THUMB_H + INFO_H;
   const HW      = NODE_W / 2;   // half-width  = 90
   const HH      = NODE_H / 2;   // half-height = 70
@@ -47,6 +48,12 @@
     centerStrength: 0.03,
     velocityDecay: 0.65,
     alphaDecay: 0.03,
+    fitMarginLeft: 160,
+    fitMarginRight: 160,
+    fitMarginTop: 240,
+    fitMarginBottom: 140,
+    maxZoom: 6,
+    groupLabelGap: 18,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -83,15 +90,28 @@
         .attr("rx", 6);
 
     _zoom = d3.zoom()
-      .scaleExtent([0.08, 3])
+      .scaleExtent([0.08, LAYOUT.maxZoom])
+      .filter(zoomFilter)
       .on("zoom", (e) => _g.attr("transform", e.transform));
 
     _svg.call(_zoom);
+    _svg.on("auxclick", (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - _lastMiddleClickAt < 350) {
+        _lastMiddleClickAt = 0;
+        fitView();
+      } else {
+        _lastMiddleClickAt = now;
+      }
+    });
     _g = _svg.append("g");
 
     _g.append("g").attr("class", "hulls-layer");
     _g.append("g").attr("class", "links-layer");
     _g.append("g").attr("class", "nodes-layer");
+    _g.append("g").attr("class", "labels-layer");
 
     document.addEventListener("click", hideContextMenu);
     window.addEventListener("keydown", onKeyDown);
@@ -108,6 +128,7 @@
       sendToBackend({ action: "toggle_auto_refresh", enabled: this.classList.contains("active") });
     });
     document.getElementById("btn-fit").addEventListener("click", fitView);
+    window.setInterval(() => sendToBackend({ action: "refresh_active" }), 300);
 
     _initialized = true;
     console.log("wind_mgr init complete");
@@ -115,6 +136,13 @@
       window.windMgr.updateGraph(_pendingData);
       _pendingData = null;
     }
+  }
+
+  function zoomFilter(e) {
+    if (e.type === "wheel") return true;
+    if (e.type === "mousedown") return e.button === 1;
+    if (e.type === "dblclick") return false;
+    return !e.button;
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -134,6 +162,10 @@
       updateStatus();
     },
 
+    setActiveWindow(xid) {
+      setActiveWindow(xid);
+    },
+
     highlightNode(xid) {
       const g = d3.select(`[data-xid="${xid}"]`);
       g.classed("pulse", false);
@@ -147,6 +179,19 @@
         .on("animationend", function () { d3.select(this).classed("flash", false); });
     },
   };
+
+  function setActiveWindow(xid) {
+    if (_data.active_xid === xid) return;
+    _data.active_xid = xid;
+    d3.selectAll(".node-g")
+      .classed("active-window", d => d.xid === xid)
+      .classed("active-window-new", false);
+    const active = d3.select(`[data-xid="${xid}"]`);
+    if (!active.empty()) {
+      active.classed("active-window-new", false);
+      requestAnimationFrame(() => active.classed("active-window-new", true));
+    }
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
   function render() {
@@ -232,17 +277,12 @@
       .attr("preserveAspectRatio", "xMidYMid slice")
       .attr("clip-path", "url(#thumb-clip)");
 
-    // Info bar background
-    nodeEnter.append("rect")
-      .attr("class", "node-info-bg")
-      .attr("x", -HW).attr("y", -HH + THUMB_H)
-      .attr("width", NODE_W).attr("height", INFO_H)
-      .attr("rx", 0);
-
     // App icon badge
     nodeEnter.append("image")
       .attr("class", "node-icon")
       .attr("width", 20).attr("height", 20);
+
+    nodeEnter.append("title");
 
     // Title
     nodeEnter.append("text")
@@ -286,15 +326,17 @@
 
     // Title — center in info bar
     g.select(".node-title")
-      .attr("y", -HH + THUMB_H + INFO_H / 2 + 4)
+      .attr("y", HH - 8)
       .text(truncTitle);
 
     // Breadcrumb
     const bc = d.breadcrumb || "";
     g.select(".node-breadcrumb")
-      .attr("y", -HH + THUMB_H + INFO_H - 3)
+      .attr("y", HH - 3)
       .text(bc)
-      .style("display", bc ? null : "none");
+      .style("display", "none");
+
+    g.select("title").text(displayTitle || d.title || `Window ${d.xid}`);
   }
 
   function ticked() {
@@ -331,7 +373,9 @@
       });
       const hull = d3.polygonHull(pts);
       return { pid, proj, hull, nodes,
-               cx: d3.mean(nodes, n => n.x), cy: d3.mean(nodes, n => n.y) };
+               cx: d3.mean(nodes, n => n.x),
+               cy: d3.mean(nodes, n => n.y),
+               labelY: d3.min(pts, p => p[1]) - LAYOUT.groupLabelGap };
     }).filter(d => d.hull);
 
     const hulls = _g.select(".hulls-layer")
@@ -340,20 +384,24 @@
     const enter = hulls.enter().append("g").attr("class", "hull-group");
     enter.append("path").attr("class", "cluster-hull")
       .on("dblclick", (e, d) => toggleProject(d.pid));
-    enter.append("text").attr("class", "cluster-label");
 
     const all = enter.merge(hulls);
     all.select(".cluster-hull")
       .attr("d", d => "M" + d.hull.join("L") + "Z")
       .attr("fill", d => d.proj.color)
       .attr("stroke", d => d.proj.color);
-    all.select(".cluster-label")
-      .attr("x", d => d.cx).attr("y", d => d.cy - 85)
+
+    const labels = _g.select(".labels-layer")
+      .selectAll(".cluster-label").data(hullData, d => d.pid);
+    const labelsEnter = labels.enter().append("text").attr("class", "cluster-label");
+    labelsEnter.merge(labels)
+      .attr("x", d => d.cx).attr("y", d => d.labelY)
       .attr("text-anchor", "middle")
       .attr("fill", d => d.proj.color)
       .text(d => d.proj.name);
 
     hulls.exit().remove();
+    labels.exit().remove();
   }
 
   // ── Force cluster ─────────────────────────────────────────────────────────
@@ -680,8 +728,10 @@
     const nodes = _data.nodes.filter(n => n.is_alive);
     if (!nodes.length) return;
     const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
-    const x0 = Math.min(...xs) - 140, y0 = Math.min(...ys) - 120;
-    const x1 = Math.max(...xs) + 140, y1 = Math.max(...ys) + 120;
+    const x0 = Math.min(...xs) - LAYOUT.fitMarginLeft;
+    const y0 = Math.min(...ys) - LAYOUT.fitMarginTop;
+    const x1 = Math.max(...xs) + LAYOUT.fitMarginRight;
+    const y1 = Math.max(...ys) + LAYOUT.fitMarginBottom;
     const W = window.innerWidth, H = window.innerHeight;
     const scale = Math.min(0.9, Math.min(W / (x1 - x0), H / (y1 - y0)));
     const tx = (W - scale * (x0 + x1)) / 2;

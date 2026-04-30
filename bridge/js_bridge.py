@@ -79,6 +79,24 @@ class JSBridge:
         except Exception:
             log.exception("push_graph failed")
 
+    def push_active_window(self) -> None:
+        if self._webview is None:
+            return
+        try:
+            active_xid = self._active_window_xid()
+            js = (
+                "try{"
+                f"if(window.windMgr)window.windMgr.setActiveWindow({json.dumps(active_xid)});"
+                "else console.warn('windMgr not ready');"
+                "}catch(e){console.error('setActiveWindow error:',e.toString(),e.stack);}"
+            )
+            self._webview.evaluate_javascript(
+                js, -1, None, None, None,
+                self._js_done_cb, None
+            )
+        except Exception:
+            log.exception("push_active_window failed")
+
     def _js_done_cb(self, source, result, _user_data) -> None:
         try:
             source.evaluate_javascript_finish(result)
@@ -88,7 +106,7 @@ class JSBridge:
     # ── Serialisation ─────────────────────────────────────────────────────
 
     def _serialize(self) -> dict:
-        alive = self._reg.all_alive()
+        alive = [r for r in self._reg.all_alive() if not _is_self_record(r)]
         projects = self._tree.get_projects()
 
         proj_id_set = {p["id"] for p in projects}
@@ -125,16 +143,32 @@ class JSBridge:
 
         edges = []
         for r in alive:
-            if r.parent_xid is not None and self._reg.get(r.parent_xid):
+            parent = self._reg.get(r.parent_xid) if r.parent_xid is not None else None
+            if parent is not None and not _is_self_record(parent):
                 edges.append({"source": r.parent_xid, "target": r.xid, "type": "parent-child"})
 
-        # Determine active window
-        active_xid = None
-        for r in sorted(alive, key=lambda x: -x.last_focused_at):
-            active_xid = r.xid
-            break
+        active_xid = self._active_window_xid()
 
         return {"nodes": nodes, "edges": edges, "projects": projects, "active_xid": active_xid}
+
+    def _active_window_xid(self) -> int | None:
+        try:
+            import gi
+            gi.require_version("Wnck", "3.0")
+            from gi.repository import Wnck
+            screen = Wnck.Screen.get_default()
+            screen.force_update()
+            active = screen.get_active_window()
+            if active is None:
+                return None
+            xid = active.get_xid()
+            record = self._reg.get(xid)
+            if record is None or _is_self_record(record):
+                return None
+            return xid
+        except Exception:
+            log.debug("Failed to read active window", exc_info=True)
+            return None
 
     # ── Incoming messages from JS ─────────────────────────────────────────
 
@@ -175,6 +209,8 @@ class JSBridge:
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
                 self._set_auto_refresh(msg.get("enabled", False))
+            elif action == "refresh_active":
+                self.push_active_window()
             elif action == "toggle_project":
                 pass  # future: collapse project
         except Exception:
@@ -240,3 +276,13 @@ class JSBridge:
 
     def _on_graph_updated(self) -> None:
         GLib.idle_add(self.push_graph)
+
+
+def _is_self_record(record) -> bool:
+    values = {
+        record.title,
+        record.app_name,
+        record.wm_class,
+        record.wm_class_group,
+    }
+    return any((v or "").strip().lower() == "wind_mgr" for v in values)

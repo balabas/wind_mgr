@@ -40,8 +40,12 @@ svg#graph {
   font-weight: 700;
   letter-spacing: 0.5px;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: 0.95;
   pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(15,15,35,0.95);
+  stroke-width: 5px;
+  stroke-linejoin: round;
 }
 
 /* Edges */
@@ -62,36 +66,56 @@ svg#graph {
   100% { stroke: #555; stroke-opacity: 0.6; stroke-width: 1.5; }
 }
 
-/* Node foreignObject wrapper */
-.node-fo {
-  overflow: visible;
+.node-bg {
+  fill: #101426;
+  stroke: #3a4668;
+  stroke-opacity: 1;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 3px 8px rgba(0,0,0,0.55));
 }
-.node-card {
-  width: 180px;
-  background: #16213e;
-  border: 2px solid #2a2a4a;
-  border-radius: 8px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+.node-g:hover .node-bg {
+  stroke: #4a90d9;
+  stroke-width: 3.5;
 }
-.node-card:hover {
-  border-color: #4a90d9;
-  transform: scale(1.04);
-  box-shadow: 0 4px 16px rgba(74,144,217,0.4);
-  z-index: 10;
+.node-g.active-window .node-bg {
+  stroke: #00d4ff;
+  filter: drop-shadow(0 0 12px rgba(0,212,255,0.65));
+  animation: active-window-flash 2.4s ease-in-out infinite;
 }
-.node-card.active-window {
-  border-color: #00d4ff;
-  box-shadow: 0 0 14px rgba(0,212,255,0.6);
+.node-g.active-window-new .node-bg {
+  animation-name: active-window-flash-start;
 }
-.node-card.selected {
-  border-color: #f39c12;
-  box-shadow: 0 0 14px rgba(243,156,18,0.5);
+.node-g.selected .node-bg {
+  stroke: #f39c12;
+  filter: drop-shadow(0 0 12px rgba(243,156,18,0.55));
 }
-.node-card.pulse {
-  animation: node-pulse 0.8s ease-out;
+@keyframes active-window-flash {
+  0%, 100% {
+    stroke: #00d4ff;
+    stroke-opacity: 0.45;
+    stroke-width: 2.5;
+    filter: drop-shadow(0 0 7px rgba(0,212,255,0.45));
+  }
+  50% {
+    stroke: #8ff3ff;
+    stroke-opacity: 1;
+    stroke-width: 5;
+    filter: drop-shadow(0 0 20px rgba(0,212,255,0.95));
+  }
+}
+@keyframes active-window-flash-start {
+  0%, 100% {
+    stroke: #8ff3ff;
+    stroke-opacity: 1;
+    stroke-width: 5;
+    filter: drop-shadow(0 0 20px rgba(0,212,255,0.95));
+  }
+  50% {
+    stroke: #00d4ff;
+    stroke-opacity: 0.45;
+    stroke-width: 2.5;
+    filter: drop-shadow(0 0 7px rgba(0,212,255,0.45));
+  }
 }
 @keyframes node-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.8); }

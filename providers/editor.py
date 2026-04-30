@@ -12,7 +12,12 @@ _EDITOR_CLASSES = {
     "dbeaver", "dbeaverlauncher",
     "libreoffice", "soffice",
     "sublime_text", "atom",
+    "jetbrains-pycharm", "pycharm", "pycharm-professional", "pycharm-community",
 }
+_JETBRAINS_CLASSES = {
+    "jetbrains-pycharm", "pycharm", "pycharm-professional", "pycharm-community",
+}
+_JETBRAINS_TITLE_PARTS = re.compile(r"^(.+?)\s+[-–]\s+(.+?)$")
 _TERMINAL_EDITOR_RE = re.compile(
     r"^(?:n?vim?|emacs|nano|micro|helix|hx)\b", re.IGNORECASE
 )
@@ -38,6 +43,12 @@ class EditorProvider(Provider):
             m = _TERMINAL_EDITOR_RE.match(record.title)
             record.metadata["editor_name"] = m.group(0) if m else cls
             record.metadata["group_key"] = record.metadata["editor_name"]
+        elif cls in _JETBRAINS_CLASSES:
+            record.metadata["app_type"] = "editor"
+            record.metadata["editor_name"] = "PyCharm"
+            project_name = _jetbrains_project_name(record.title)
+            record.metadata["project_name"] = f"PyCharm: {project_name}" if project_name else "PyCharm"
+            record.metadata["group_key"] = record.metadata["project_name"]
         elif "dbeaver" in cls:
             record.metadata["app_type"] = "editor"
             record.metadata["editor_name"] = "DBeaver"
@@ -50,6 +61,14 @@ class EditorProvider(Provider):
             record.metadata["app_type"] = "editor"
             record.metadata["editor_name"] = record.app_name or record.wm_class
             record.metadata["group_key"] = record.metadata["editor_name"]
+
+
+def _jetbrains_project_name(title: str) -> str:
+    title = title.strip()
+    m = _JETBRAINS_TITLE_PARTS.match(title)
+    if not m:
+        return title
+    return m.group(1).strip()
 
 
 class TerminalProvider(Provider):

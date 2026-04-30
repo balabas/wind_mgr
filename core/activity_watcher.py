@@ -21,6 +21,8 @@ _SKIP_TYPES = {
     Wnck.WindowType.UTILITY,
 }
 
+_SELF_TITLES = {"wind_mgr"}
+
 
 class ActivityWatcher:
     def __init__(self, registry: WindowRegistry) -> None:
@@ -50,7 +52,9 @@ class ActivityWatcher:
                  len(self._registry.all_alive()))
 
     def _should_track(self, window: Wnck.Window) -> bool:
-        return window.get_window_type() not in _SKIP_TYPES
+        if window.get_window_type() in _SKIP_TYPES:
+            return False
+        return not _is_self_window(window)
 
     def _register_existing(self, window: Wnck.Window) -> None:
         xid = window.get_xid()
@@ -72,6 +76,9 @@ class ActivityWatcher:
         prev = screen.get_previously_active_window()
         if prev is not None:
             parent_xid = prev.get_xid()
+        parent = self._registry.get(parent_xid) if parent_xid is not None else None
+        if parent is not None and _is_self_record(parent):
+            parent_xid = None
 
         record = self._build_record(window, parent_xid=parent_xid)
         self._registry.add(record)
@@ -93,7 +100,7 @@ class ActivityWatcher:
                                   prev: Wnck.Window | None) -> None:
         old_xid = prev.get_xid() if prev else None
         active = screen.get_active_window()
-        new_xid = active.get_xid() if active else None
+        new_xid = active.get_xid() if active and not _is_self_window(active) else None
 
         if new_xid and (record := self._registry.get(new_xid)):
             record.last_focused_at = time.time()
@@ -126,3 +133,25 @@ class ActivityWatcher:
     @property
     def active_xid(self) -> int | None:
         return self._active_xid
+
+
+def _is_self_window(window: Wnck.Window) -> bool:
+    app = window.get_application()
+    app_name = (app.get_name() if app else "") or ""
+    values = {
+        window.get_name() or "",
+        app_name,
+        window.get_class_instance_name() or "",
+        window.get_class_group_name() or "",
+    }
+    return any(v.strip().lower() in _SELF_TITLES for v in values)
+
+
+def _is_self_record(record: WindowRecord) -> bool:
+    values = {
+        record.title,
+        record.app_name,
+        record.wm_class,
+        record.wm_class_group,
+    }
+    return any((v or "").strip().lower() in _SELF_TITLES for v in values)
