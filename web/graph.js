@@ -430,7 +430,7 @@
   // ── Cluster hulls ─────────────────────────────────────────────────────────
   function renderHulls() {
     const projectGroups = {};
-    _data.nodes.filter(n => n.is_alive).forEach(n => {
+    _data.nodes.filter(n => n.is_alive && n.fx == null).forEach(n => {
       (projectGroups[n.project_id] = projectGroups[n.project_id] || []).push(n);
     });
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
+import configparser
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import gi
@@ -15,6 +17,7 @@ if TYPE_CHECKING:
     from capture.screenshot import ScreenshotCapture
 
 log = logging.getLogger(__name__)
+_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
 
 
 class JSBridge:
@@ -27,6 +30,14 @@ class JSBridge:
         self._auto_refresh = False
         self._auto_refresh_tag: int | None = None
         self._graph_update_tag: int | None = None
+        self._active_refresh_tag: int | None = None
+        self._bg_refresh_tag: int | None = None
+        self._bg_refresh_idx: int = 0
+
+        cfg = configparser.ConfigParser()
+        cfg.read(_CONFIG_PATH)
+        self._active_refresh_ms  = int(cfg.getfloat("capture", "active_refresh_interval",  fallback=1.0)  * 1000)
+        self._bg_refresh_ms      = int(cfg.getfloat("capture", "background_refresh_interval", fallback=10.0) * 1000)
 
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
 
