@@ -1,10 +1,19 @@
 from __future__ import annotations
+
 import logging
 from typing import Callable
 
+import configparser
+from pathlib import Path
+_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
+cfg = configparser.ConfigParser()
+cfg.read(_CONFIG_PATH)
+_HOTKEY = cfg.get("capture", "hotkey", fallback="<Super>e")
+
 log = logging.getLogger(__name__)
 
-_HOTKEY = "<Super>w"
+
+
 _keybinder_callback: Callable | None = None
 _xlib_thread_started = False
 
@@ -37,8 +46,8 @@ def bind_hotkey(callback: Callable, accelerator: str | None = None) -> bool:
     except Exception:
         log.debug("Keybinder3 not available, trying python-xlib", exc_info=True)
 
-    if _HOTKEY != "<Super>w":
-        log.warning("python-xlib fallback only supports <Super>w, not %s", _HOTKEY)
+    if _HOTKEY != "<Super>e":
+        log.warning("python-xlib fallback only supports <Super>e, not %s", _HOTKEY)
         return False
 
     try:

@@ -40,8 +40,8 @@
     dropHullPad: 30,
     dropNearestDistance: 0,
     geometrySpacing: 620,
-    projectMarginX: 260,
-    projectMarginY: 220,
+    projectMargin: 260,
+    projectMargin: 220,
     projectCellW: 720,
     projectCellH: 540,
     sameProjectLinkDistance: 180,
@@ -64,7 +64,7 @@
     foreignCardBoundaryStrength: 0.75,
     projectAnchorStrength: 0.035,
     centerStrength: 0.01,
-    velocityDecay: 0.65,
+    velocityDecay: 0.15,
     alphaDecay: 0.03,
     fitMarginLeft: 160,
     fitMarginRight: 160,
@@ -521,7 +521,7 @@
 
     const cols = Math.ceil(Math.sqrt(ids.length));
     const rows = Math.ceil(ids.length / cols);
-    const marginX = LAYOUT.projectMarginX, marginY = LAYOUT.projectMarginY;
+    const marginX = LAYOUT.projectMargin, marginY = LAYOUT.projectMargin;
     const cellW = LAYOUT.projectCellW, cellH = LAYOUT.projectCellH;
     const width = Math.max(cellW * cols, window.innerWidth - marginX * 2);
     const height = Math.max(cellH * rows, window.innerHeight - marginY * 2);

@@ -11,6 +11,15 @@ gi.require_version("WebKit2", "4.1")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gdk, WebKit2, GLib
 from gi.repository import AyatanaAppIndicator3 as AppIndicator3
+from pynput import keyboard
+import configparser
+from pathlib import Path
+_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
+cfg = configparser.ConfigParser()
+cfg.read(_CONFIG_PATH)
+_HOTKEY = str(cfg.get("capture", "hotkey"))
+
+print("Configured hotkey:", [_HOTKEY])
 
 from .hotkey import bind_hotkey
 
@@ -140,8 +149,22 @@ class MainWindow:
             # Small delay to let D3 initialise before first push
             GLib.timeout_add(300, self._initial_push)
 
+    #def _bind_hotkey(self) -> None:
+    #    bind_hotkey(lambda: GLib.idle_add(self.toggle))
+
     def _bind_hotkey(self) -> None:
-        bind_hotkey(lambda: GLib.idle_add(self.toggle))
+        # This runs in a background thread
+        def on_activate():
+            # Use GLib.idle_add because GTK is not thread-safe
+            GLib.idle_add(self.toggle)
+
+        # Define the shortcut (e.g., <Super>+w)
+        # Note: pynput uses <cmd> for the Super/Windows key
+        # pynput does uses for "Ctrl" 
+        self.hotkey_listener = keyboard.GlobalHotKeys({
+            _HOTKEY: on_activate
+        })
+        self.hotkey_listener.start()
 
     def _show_hotkey_dialog(self) -> None:
         dialog = Gtk.Dialog(
@@ -210,6 +233,7 @@ class MainWindow:
     def show(self) -> None:
         if self._win:
             self._win.show_all()
+            self._win.deiconify()  # Разворачивает, если было свернуто
             self._win.maximize()
             self._win.present()
             GLib.idle_add(self._maximize_visible_window)
