@@ -213,17 +213,17 @@ class JSBridge:
             (log.error if lvl == "error" else log.warning if lvl == "warn" else log.debug)(
                 "JS %s: %s", lvl, txt)
             return False
-        log.debug("JS message: %s", msg)
+        if action != "refresh_active":
+            log.debug("JS message: %s", msg)
         try:
             if action == "activate":
                 self._activate_window(msg["xid"])
             elif action == "move_node":
-                self._tree.move_node(
-                    msg["xid"], msg["project_id"],
-                    with_children=msg.get("with_children", False)
+                self._move_node(
+                    int(msg["xid"]),
+                    str(msg["project_id"]),
+                    with_children=msg.get("with_children", False),
                 )
-                self._reg.save()
-                self.push_graph()
             elif action == "rename_project":
                 self._rename_project(msg["project_id"], msg["name"])
             elif action == "refresh_thumb":
@@ -256,6 +256,16 @@ class JSBridge:
                 w.activate(ts)
                 return
         log.warning("activate: window xid=%d not found", xid)
+
+    def _move_node(self, xid: int, target_project_id: str,
+                   with_children: bool) -> None:
+        record = self._reg.get(xid)
+        if record is None:
+            return
+
+        self._tree.move_node(xid, target_project_id, with_children=with_children)
+        self._reg.save()
+        self.push_graph()
 
     def _rename_project(self, project_id: str, name: str) -> None:
         # Store custom name in registry as metadata on root record
@@ -348,7 +358,7 @@ class JSBridge:
         def _done(success: bool) -> None:
             self._capture_inflight.discard(xid)
             if success:
-                self.push_graph()
+                self._on_graph_updated()
 
         self._capture.capture_async(xid, callback=_done)
         GLib.idle_add(self._capture.capture_icon, xid)

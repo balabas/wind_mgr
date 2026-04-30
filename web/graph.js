@@ -2,6 +2,8 @@
 (function () {
   "use strict";
 
+  const GRAPH_VERSION = "20260430-2118";
+
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
   let _simulation = null;
@@ -19,6 +21,12 @@
   let _dragStart = null;
   let _dragMoved = false;
   let _dragDropHulls = null;
+  let _dragActive = false;
+  let _queuedGraphData = null;
+  let _recentDetach = {};
+  let _dragOriginProject = null;
+  let _dragTargetProject = null;
+  let _settleAfterMoveUntil = 0;
   let _lastMiddleClickAt = 0;
 
   const NODE_W  = 180;
@@ -29,7 +37,8 @@
     hullPad: 100,
     hullShape: "cards",
     dropIntoPad: 30,
-    dropNearestDistance: 140,
+    dropHullPad: 30,
+    dropNearestDistance: 0,
     projectMarginX: 260,
     projectMarginY: 220,
     projectCellW: 720,
@@ -133,7 +142,7 @@
     window.setInterval(() => sendToBackend({ action: "refresh_active" }), 300);
 
     _initialized = true;
-    console.log("wind_mgr init complete");
+    console.log("wind_mgr init complete graph=" + GRAPH_VERSION);
     if (_pendingData) {
       window.windMgr.updateGraph(_pendingData);
       _pendingData = null;
@@ -153,6 +162,10 @@
       if (!_initialized) {
         console.warn("windMgr.updateGraph called before init — queuing");
         _pendingData = data;
+        return;
+      }
+      if (_dragActive) {
+        _queuedGraphData = data;
         return;
       }
       const nextSignature = graphSignature(data);
@@ -254,10 +267,13 @@
       .velocityDecay(LAYOUT.velocityDecay)
       .alphaDecay(LAYOUT.alphaDecay)
       .on("tick", ticked);
-    if (_forceFrozen || !topologyChanged) {
+    const shouldSettle = Date.now() < _settleAfterMoveUntil;
+    if (_forceFrozen || (!topologyChanged && !shouldSettle)) {
       _simulation.stop();
       _simulation.alpha(0);
       nodes.forEach(n => { n.vx = 0; n.vy = 0; });
+    } else if (shouldSettle) {
+      _simulation.alpha(Math.max(_simulation.alpha(), 0.45)).restart();
     }
 
     // ── Edges ──────────────────────────────────────────────────────────
@@ -685,36 +701,39 @@
   }
 
   function dragStarted(e, d) {
+    _dragActive = true;
+    _queuedGraphData = null;
     _dragFreeze = eventWantsFreeze(e);
-    if (_dragFreeze) _simulation.stop();
-    _dragStart = { x: e.x, y: e.y };
+    if (_simulation) _simulation.stop();
+    _dragStart = { x: e.x, y: e.y, project_id: d.project_id };
+    _dragOriginProject = d.project_id;
     _dragMoved = false;
+    _dragTargetProject = null;
     _dragDropHulls = buildDropHulls(d);
     setDragFeedback(d, null);
     d.fx = d.x; d.fy = d.y;
   }
   function dragged(e, d) {
-    if (_dragFreeze || eventWantsFreeze(e)) {
-      _dragFreeze = true;
-      _forceFrozen = true;
-      _simulation.stop();
-    }
+    if (eventWantsFreeze(e)) _dragFreeze = true;
+    if (_simulation) _simulation.stop();
     const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
     if (!_dragMoved && moved >= 8) _dragMoved = true;
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
-    setDragFeedback(d, findDropProject(e.x, e.y, d));
+    _dragTargetProject = findDropProject(e.x, e.y, d);
+    setDragFeedback(d, _dragTargetProject);
     renderNodesOnly();
     renderHulls();
   }
   function dragEnded(e, d) {
-    const wasFrozen = _dragFreeze;
     const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
     const restore = _dragStart;
+    const startedProject = _dragStart ? _dragStart.project_id : d.project_id;
     _dragStart = null;
     _dragMoved = false;
     _dragFreeze = false;
-    if (!_ctrlDown && !(e.sourceEvent && e.sourceEvent.ctrlKey)) setForceFrozen(false);
+    const keepFrozen = _ctrlDown || !!(e.sourceEvent && e.sourceEvent.ctrlKey);
+    if (!keepFrozen) setForceFrozen(false);
     if (!e.active) _simulation.alphaTarget(0);
     d.fx = null; d.fy = null;
     d.vx = 0; d.vy = 0;
@@ -724,13 +743,26 @@
       renderNodesOnly();
       clearDragFeedback();
       _dragDropHulls = null;
+      _dragActive = false;
+      _dragOriginProject = null;
+      _dragTargetProject = null;
+      flushQueuedGraphData();
       return;
     }
 
-    const target = findDropProject(e.x, e.y, d);
-    const ownProject = String(d.xid);
-    const nextProject = target || ownProject;
-    if (nextProject !== d.project_id) {
+    const target = _dragTargetProject;
+    const ownProject = soloProjectId(d.xid);
+    let nextProject = target || ownProject;
+    if (target === startedProject && isRecentDetach(d.xid, startedProject)) {
+      nextProject = ownProject;
+      console.log("ignored stale reinsertion", d.xid, startedProject);
+    }
+    console.log("drag release", d.xid, "from", startedProject, "target", target, "next", nextProject);
+    const projectChanged = nextProject !== d.project_id;
+    if (projectChanged) {
+      if (nextProject === ownProject && startedProject !== ownProject) {
+        _recentDetach[d.xid] = { from: startedProject, until: Date.now() + 6000 };
+      }
       d.project_id = nextProject;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
       sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: false });
@@ -738,15 +770,49 @@
 
     clearDragFeedback();
     _dragDropHulls = null;
-    if (!_forceFrozen) {
-      if (_simulation.alpha() < 0.05) _simulation.alpha(0.3).restart();
-      else _simulation.restart();
+    _dragActive = false;
+    _dragOriginProject = null;
+    _dragTargetProject = null;
+    renderHulls();
+    if (projectChanged) {
+      _queuedGraphData = null;
+      _settleAfterMoveUntil = Date.now() + 2500;
     }
+    else flushQueuedGraphData();
+    if (!keepFrozen && !_forceFrozen) restartLayout(projectChanged ? 0.65 : 0.3);
+  }
+
+  function restartLayout(alpha) {
+    if (!_simulation) return;
+    _simulation.alphaTarget(0);
+    _simulation.alpha(Math.max(_simulation.alpha(), alpha)).restart();
+  }
+
+  function flushQueuedGraphData() {
+    if (!_queuedGraphData) return;
+    const data = _queuedGraphData;
+    _queuedGraphData = null;
+    window.windMgr.updateGraph(data);
+  }
+
+  function isRecentDetach(xid, projectId) {
+    const rec = _recentDetach[xid];
+    if (!rec) return false;
+    if (Date.now() > rec.until) {
+      delete _recentDetach[xid];
+      return false;
+    }
+    return rec.from === projectId;
+  }
+
+  function soloProjectId(xid) {
+    return `${xid}:solo`;
   }
 
   function findDropProject(x, y, dragged) {
     const containing = findProjectContainingPoint(x, y, dragged);
     if (containing) return containing;
+    if (!LAYOUT.dropNearestDistance || LAYOUT.dropNearestDistance <= 0) return null;
     return findNearestProject(x, y, dragged.project_id, LAYOUT.dropNearestDistance);
   }
 
@@ -756,7 +822,7 @@
       if (h.rects && h.rects.some(r => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) {
         return h.pid;
       }
-      if (h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
+      if (h.pid !== _dragOriginProject && h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
     }
     return null;
   }
@@ -766,20 +832,21 @@
       const members = _data.nodes.filter(n =>
         n.is_alive && n.project_id === p.id && n.xid !== dragged.xid);
       if (!members.length) return { pid: p.id, hull: null, rects: [] };
-      const pad = LAYOUT.dropIntoPad;
+      const pad = LAYOUT.dropHullPad;
       const pts = members.flatMap(n => [
         [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) - cardSize(n).h / 2 - pad],
         [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) - cardSize(n).h / 2 - pad],
         [(n.x || 0) + cardSize(n).w / 2 + pad, (n.y || 0) + cardSize(n).h / 2 + pad],
         [(n.x || 0) - cardSize(n).w / 2 - pad, (n.y || 0) + cardSize(n).h / 2 + pad],
       ]);
+      const rectPad = LAYOUT.dropIntoPad;
       const rects = members.map(n => ({
-        x0: (n.x || 0) - cardSize(n).w / 2 - pad,
-        x1: (n.x || 0) + cardSize(n).w / 2 + pad,
-        y0: (n.y || 0) - cardSize(n).h / 2 - pad,
-        y1: (n.y || 0) + cardSize(n).h / 2 + pad,
+        x0: (n.x || 0) - cardSize(n).w / 2 - rectPad,
+        x1: (n.x || 0) + cardSize(n).w / 2 + rectPad,
+        y0: (n.y || 0) - cardSize(n).h / 2 - rectPad,
+        y1: (n.y || 0) + cardSize(n).h / 2 + rectPad,
       }));
-      return { pid: p.id, hull: null, rects };
+      return { pid: p.id, hull: d3.polygonHull(pts), rects };
     });
   }
 
