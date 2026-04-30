@@ -1,4 +1,5 @@
 from __future__ import annotations
+import configparser
 import logging
 import os
 import subprocess
@@ -17,8 +18,10 @@ from gi.repository import Gdk, GdkX11, GdkPixbuf, GLib, Wnck
 
 log = logging.getLogger(__name__)
 
-THUMB_W = 240
-THUMB_H = 150
+DEFAULT_THUMB_W = 720
+DEFAULT_THUMB_H = 450
+DEFAULT_ICON_SIZE = 64
+CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
 THUMBS_DIR = Path.home() / ".local" / "share" / "wind_mgr" / "thumbs"
 ICONS_DIR  = Path.home() / ".local" / "share" / "wind_mgr" / "icons"
 
@@ -29,6 +32,26 @@ class ScreenshotCapture:
         ICONS_DIR.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="screenshot")
         self._display: GdkX11.X11Display | None = None
+        self._thumb_w = DEFAULT_THUMB_W
+        self._thumb_h = DEFAULT_THUMB_H
+        self._icon_size = DEFAULT_ICON_SIZE
+        self._load_config()
+
+    def _load_config(self) -> None:
+        if not CONFIG_PATH.exists():
+            return
+        try:
+            parser = configparser.ConfigParser()
+            parser.optionxform = str
+            parser.read(CONFIG_PATH)
+            cfg = parser["capture"] if parser.has_section("capture") else {}
+            self._thumb_w = _positive_int(cfg.get("thumb_width"), DEFAULT_THUMB_W)
+            self._thumb_h = _positive_int(cfg.get("thumb_height"), DEFAULT_THUMB_H)
+            self._icon_size = _positive_int(cfg.get("icon_size"), DEFAULT_ICON_SIZE)
+            log.info("Capture config: thumbnails=%dx%d icons=%d",
+                     self._thumb_w, self._thumb_h, self._icon_size)
+        except Exception:
+            log.warning("Failed to load capture config from %s", CONFIG_PATH, exc_info=True)
 
     def _get_display(self) -> GdkX11.X11Display:
         if self._display is None:
@@ -65,7 +88,10 @@ class ScreenshotCapture:
                 if w.get_xid() == xid:
                     pixbuf = w.get_icon()
                     if pixbuf:
-                        scaled = pixbuf.scale_simple(32, 32, GdkPixbuf.InterpType.BILINEAR)
+                        scaled = pixbuf.scale_simple(
+                            self._icon_size, self._icon_size,
+                            GdkPixbuf.InterpType.BILINEAR,
+                        )
                         scaled.savev(str(self.icon_path(xid)), "png", [], [])
                         return True
         except Exception:
@@ -110,7 +136,10 @@ class ScreenshotCapture:
                 if pb is None:
                     result.append(False)
                     return
-                scaled = pb.scale_simple(THUMB_W, THUMB_H, GdkPixbuf.InterpType.BILINEAR)
+                scaled = pb.scale_simple(
+                    self._thumb_w, self._thumb_h,
+                    GdkPixbuf.InterpType.BILINEAR,
+                )
                 scaled.savev(str(self.thumb_path(xid)), "png", [], [])
                 result.append(True)
             except Exception:
@@ -143,14 +172,22 @@ class ScreenshotCapture:
                 "-video_size", f"{w}x{h}",
                 "-i", f"{display}+{x},{y}",
                 "-vframes", "1",
-                "-vf", f"scale={THUMB_W}:{THUMB_H}:force_original_aspect_ratio=increase,"
-                       f"crop={THUMB_W}:{THUMB_H}",
+                "-vf", f"scale={self._thumb_w}:{self._thumb_h}:force_original_aspect_ratio=increase,"
+                       f"crop={self._thumb_w}:{self._thumb_h}",
                 out,
             ], capture_output=True, timeout=5)
             return proc.returncode == 0
         except Exception:
             log.debug("ffmpeg capture failed xid=%d", xid, exc_info=True)
             return False
+
+
+def _positive_int(value, default: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_xwininfo(text: str) -> tuple[int, int, int, int]:

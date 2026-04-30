@@ -30,6 +30,11 @@ svg#graph {
 .cluster-hull:hover {
   fill-opacity: 0.15;
 }
+.hull-group.drop-target .cluster-hull {
+  fill-opacity: 0.22;
+  stroke-opacity: 1;
+  stroke-width: 4;
+}
 .cluster-label {
   font-size: 12px;
   font-weight: 700;
@@ -152,6 +157,19 @@ svg#graph {
   margin-top: 1px;
 }
 
+.node-g.dragging .node-bg {
+  stroke-width: 4;
+  transition: stroke 0.12s ease, filter 0.12s ease;
+}
+.node-g.dragging.drop-into .node-bg {
+  stroke: #31d07f;
+  filter: drop-shadow(0 0 10px rgba(49,208,127,0.85));
+}
+.node-g.dragging.drop-out .node-bg {
+  stroke: #ff9f43;
+  filter: drop-shadow(0 0 10px rgba(255,159,67,0.85));
+}
+
 /* Context menu */
 #context-menu {
   position: fixed;
@@ -160,9 +178,16 @@ svg#graph {
   border-radius: 6px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.7);
   min-width: 180px;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
   z-index: 9999;
   display: none;
   overflow: hidden;
+}
+#ctx-project-list {
+  max-height: min(360px, calc(100vh - 190px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 #context-menu .menu-item {
   padding: 8px 14px;
@@ -170,6 +195,9 @@ svg#graph {
   cursor: pointer;
   color: #ccc;
   transition: background 0.1s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #context-menu .menu-item:hover {
   background: #2a2a5a;

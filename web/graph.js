@@ -12,6 +12,11 @@
   let _initialized = false;
   let _pendingData = null;
   let _projectAnchors = {};
+  let _dragFreeze = false;
+  let _forceFrozen = false;
+  let _ctrlDown = false;
+  let _dragStart = null;
+  let _dragDropHulls = null;
 
   const NODE_W  = 180;
   const THUMB_H = 112;
@@ -19,11 +24,39 @@
   const NODE_H  = THUMB_H + INFO_H;
   const HW      = NODE_W / 2;   // half-width  = 90
   const HH      = NODE_H / 2;   // half-height = 70
+  const LAYOUT = {
+    hullPad: 100,
+    projectMarginX: 220,
+    projectMarginY: 170,
+    projectCellW: 520,
+    projectCellH: 400,
+    sameProjectLinkDistance: 180,
+    crossProjectLinkDistance: 680,
+    sameProjectLinkStrength: 0.35,
+    crossProjectLinkStrength: 0.01,
+    nodeCharge: -400,
+    nodeCollideRadius: 120,
+    clusterStrength: 0.18,
+    projectCirclePadding: 260,
+    projectCircleStrength: 0.25,
+    projectRectGap: 180,
+    projectRectStrength: 0.7,
+    foreignCardBoundaryGap: 60,
+    foreignCardBoundaryStrength: 0.55,
+    projectAnchorStrength: 0.08,
+    centerStrength: 0.03,
+    velocityDecay: 0.65,
+    alphaDecay: 0.03,
+  };
 
   // ── Init ─────────────────────────────────────────────────────────────────
   function init() {
-    try { _initInner(); }
-    catch(e) { console.error("init failed:", e.toString(), e.stack || ""); }
+    Promise.resolve(window.windMgrConfigReady)
+      .then(() => {
+        Object.assign(LAYOUT, (window.windMgrConfig || {}).layout || {});
+        _initInner();
+      })
+      .catch(e => { console.error("init failed:", e.toString(), e.stack || ""); });
   }
 
   function _initInner() {
@@ -61,6 +94,10 @@
     _g.append("g").attr("class", "nodes-layer");
 
     document.addEventListener("click", hideContextMenu);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", () => { _ctrlDown = false; setForceFrozen(false); });
+    document.addEventListener("keyup", onKeyUp);
     window.addEventListener("resize", () =>
       _svg.attr("width", window.innerWidth).attr("height", window.innerHeight));
 
@@ -138,16 +175,24 @@
     // ── Simulation ──────────────────────────────────────────────────────
     if (_simulation) _simulation.stop();
     _simulation = d3.forceSimulation(nodes)
-      .force("link", d3.forceLink(linkData).id(d => d.xid).distance(220).strength(0.4))
-      .force("charge", d3.forceManyBody().strength(-400))
-      .force("collide", d3.forceCollide(120))
+      .force("link", d3.forceLink(linkData).id(d => d.xid)
+        .distance(d => d.source.project_id === d.target.project_id
+          ? LAYOUT.sameProjectLinkDistance : LAYOUT.crossProjectLinkDistance)
+        .strength(d => d.source.project_id === d.target.project_id
+          ? LAYOUT.sameProjectLinkStrength : LAYOUT.crossProjectLinkStrength))
+      .force("charge", d3.forceManyBody().strength(LAYOUT.nodeCharge))
+      .force("collide", d3.forceCollide(LAYOUT.nodeCollideRadius))
       .force("cluster", forceCluster(nodes))
-      .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(0.08))
-      .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(0.08))
-      .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2).strength(0.03))
-      .velocityDecay(0.65)
-      .alphaDecay(0.03)
+      .force("projectCollide", forceProjectCollide(nodes))
+      .force("projectRectCollide", forceProjectRectCollide(nodes))
+      .force("projectBounds", forceProjectBounds(nodes))
+      .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(LAYOUT.projectAnchorStrength))
+      .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(LAYOUT.projectAnchorStrength))
+      .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2).strength(LAYOUT.centerStrength))
+      .velocityDecay(LAYOUT.velocityDecay)
+      .alphaDecay(LAYOUT.alphaDecay)
       .on("tick", ticked);
+    if (_forceFrozen) _simulation.stop();
 
     // ── Edges ──────────────────────────────────────────────────────────
     const link = _g.select(".links-layer")
@@ -167,6 +212,7 @@
         .on("click", (e, d) => { e.stopPropagation(); onNodeClick(d); })
         .on("contextmenu", (e, d) => { e.preventDefault(); showContextMenu(e, d); })
         .call(d3.drag()
+          .filter(e => !e.button)
           .on("start", dragStarted)
           .on("drag",  dragged)
           .on("end",   dragEnded));
@@ -261,10 +307,13 @@
         return `M${sx},${sy} A${dr},${dr} 0 0,1 ${tx},${ty}`;
       });
 
+    renderNodesOnly();
+    renderHulls();
+  }
+
+  function renderNodesOnly() {
     _g.select(".nodes-layer").selectAll(".node-g")
       .attr("transform", d => `translate(${d.x || 0},${d.y || 0})`);
-
-    renderHulls();
   }
 
   // ── Cluster hulls ─────────────────────────────────────────────────────────
@@ -277,7 +326,7 @@
     const hullData = Object.entries(projectGroups).map(([pid, nodes]) => {
       const proj = _projectMap[pid] || { id: pid, name: pid, color: "#888" };
       const pts = nodes.flatMap(n => {
-        const x = n.x || 0, y = n.y || 0, pad = 80;
+        const x = n.x || 0, y = n.y || 0, pad = LAYOUT.hullPad;
         return [[x-pad,y-pad],[x+pad,y-pad],[x+pad,y+pad],[x-pad,y+pad]];
       });
       const hull = d3.polygonHull(pts);
@@ -315,9 +364,10 @@
 
     const cols = Math.ceil(Math.sqrt(ids.length));
     const rows = Math.ceil(ids.length / cols);
-    const marginX = 180, marginY = 150;
-    const width = Math.max(1, window.innerWidth - marginX * 2);
-    const height = Math.max(1, window.innerHeight - marginY * 2);
+    const marginX = LAYOUT.projectMarginX, marginY = LAYOUT.projectMarginY;
+    const cellW = LAYOUT.projectCellW, cellH = LAYOUT.projectCellH;
+    const width = Math.max(cellW * cols, window.innerWidth - marginX * 2);
+    const height = Math.max(cellH * rows, window.innerHeight - marginY * 2);
 
     ids.forEach((pid, i) => {
       const col = i % cols;
@@ -331,7 +381,7 @@
   }
 
   function forceCluster(nodes) {
-    const strength = 0.18;
+    const strength = LAYOUT.clusterStrength;
     return function force(alpha) {
       const centroids = {}, counts = {};
       nodes.forEach(n => {
@@ -354,17 +404,251 @@
     };
   }
 
+  function forceProjectCollide(nodes) {
+    const padding = LAYOUT.projectCirclePadding;
+    const strength = LAYOUT.projectCircleStrength;
+    return function force(alpha) {
+      const groups = projectBounds(nodes);
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          const a = groups[i], b = groups[j];
+          let dx = b.x - a.x, dy = b.y - a.y;
+          let dist = Math.hypot(dx, dy);
+          const minDist = a.r + b.r + padding;
+          if (dist >= minDist) continue;
+          if (!dist) {
+            dx = 1;
+            dy = 0;
+            dist = 1;
+          }
+          const push = (minDist - dist) / dist * strength * alpha;
+          const ax = dx * push * 0.5, ay = dy * push * 0.5;
+          a.nodes.forEach(n => { n.vx -= ax; n.vy -= ay; });
+          b.nodes.forEach(n => { n.vx += ax; n.vy += ay; });
+        }
+      }
+    };
+  }
+
+  function forceProjectBounds(nodes) {
+    const strength = LAYOUT.foreignCardBoundaryStrength;
+    const margin = LAYOUT.hullPad + LAYOUT.foreignCardBoundaryGap;
+    return function force(alpha) {
+      const bounds = projectRects(nodes, margin);
+      nodes.forEach(n => {
+        const x = n.x || 0, y = n.y || 0;
+        bounds.forEach(b => {
+          if (b.pid === n.project_id) return;
+          if (x < b.x0 || x > b.x1 || y < b.y0 || y > b.y1) return;
+
+          const left = x - b.x0;
+          const right = b.x1 - x;
+          const top = y - b.y0;
+          const bottom = b.y1 - y;
+          const min = Math.min(left, right, top, bottom);
+          const push = (margin - Math.max(0, min)) * strength * alpha;
+          if (min === left) n.vx += push;
+          else if (min === right) n.vx -= push;
+          else if (min === top) n.vy += push;
+          else n.vy -= push;
+        });
+      });
+    };
+  }
+
+  function forceProjectRectCollide(nodes) {
+    const gap = LAYOUT.projectRectGap;
+    const strength = LAYOUT.projectRectStrength;
+    return function force(alpha) {
+      const rects = projectRects(nodes, LAYOUT.hullPad);
+      for (let i = 0; i < rects.length; i++) {
+        for (let j = i + 1; j < rects.length; j++) {
+          const a = rects[i], b = rects[j];
+          const dx = b.cx - a.cx;
+          const dy = b.cy - a.cy;
+          const overlapX = (a.w + b.w) / 2 + gap - Math.abs(dx);
+          const overlapY = (a.h + b.h) / 2 + gap - Math.abs(dy);
+          if (overlapX <= 0 || overlapY <= 0) continue;
+
+          if (overlapX < overlapY) {
+            const dir = dx < 0 ? -1 : 1;
+            const push = overlapX * strength * alpha * 0.5;
+            a.nodes.forEach(n => { n.vx -= dir * push; });
+            b.nodes.forEach(n => { n.vx += dir * push; });
+          } else {
+            const dir = dy < 0 ? -1 : 1;
+            const push = overlapY * strength * alpha * 0.5;
+            a.nodes.forEach(n => { n.vy -= dir * push; });
+            b.nodes.forEach(n => { n.vy += dir * push; });
+          }
+        }
+      }
+    };
+  }
+
+  function projectBounds(nodes) {
+    const byProject = {};
+    nodes.forEach(n => {
+      if (!n.is_alive) return;
+      (byProject[n.project_id] = byProject[n.project_id] || []).push(n);
+    });
+    return Object.entries(byProject).map(([pid, members]) => {
+      const x = d3.mean(members, n => n.x || 0) || 0;
+      const y = d3.mean(members, n => n.y || 0) || 0;
+      const r = d3.max(members, n => Math.hypot((n.x || 0) - x, (n.y || 0) - y)) || 0;
+      return { pid, nodes: members, x, y, r: r + 120 };
+    });
+  }
+
+  function projectRects(nodes, margin) {
+    const byProject = {};
+    nodes.forEach(n => {
+      if (!n.is_alive) return;
+      (byProject[n.project_id] = byProject[n.project_id] || []).push(n);
+    });
+    return Object.entries(byProject).map(([pid, members]) => {
+      const x0 = d3.min(members, n => (n.x || 0) - margin);
+      const x1 = d3.max(members, n => (n.x || 0) + margin);
+      const y0 = d3.min(members, n => (n.y || 0) - margin);
+      const y1 = d3.max(members, n => (n.y || 0) + margin);
+      return {
+        pid, nodes: members, x0, x1, y0, y1,
+        cx: (x0 + x1) / 2,
+        cy: (y0 + y1) / 2,
+        w: x1 - x0,
+        h: y1 - y0,
+      };
+    });
+  }
+
   // ── Drag ──────────────────────────────────────────────────────────────────
+  function onKeyDown(e) {
+    if (e.key === "Control") {
+      _ctrlDown = true;
+      setForceFrozen(true);
+    }
+  }
+
+  function onKeyUp(e) {
+    if (e.key === "Control") {
+      _ctrlDown = false;
+      setForceFrozen(false);
+    }
+  }
+
+  function setForceFrozen(frozen) {
+    if (_forceFrozen === frozen) return;
+    _forceFrozen = frozen;
+    if (!_simulation) return;
+    if (frozen) {
+      _simulation.stop();
+      _data.nodes.forEach(n => { n.vx = 0; n.vy = 0; });
+      renderNodesOnly();
+    } else {
+      _simulation.alpha(0.08).restart();
+    }
+  }
+
+  function eventWantsFreeze(e) {
+    return _ctrlDown || _forceFrozen || !!(e.sourceEvent && e.sourceEvent.ctrlKey);
+  }
+
   function dragStarted(e, d) {
-    if (!e.active) _simulation.alphaTarget(0.3).restart();
+    _dragFreeze = eventWantsFreeze(e);
+    if (_dragFreeze) _simulation.stop();
+    else if (!e.active) _simulation.alphaTarget(0.3).restart();
+    _dragStart = { x: e.x, y: e.y };
+    _dragDropHulls = buildDropHulls(d);
+    setDragFeedback(d, null);
     d.fx = d.x; d.fy = d.y;
   }
-  function dragged(e, d) { d.fx = e.x; d.fy = e.y; }
+  function dragged(e, d) {
+    _dragFreeze = eventWantsFreeze(e);
+    if (_dragFreeze) {
+      _forceFrozen = true;
+      _simulation.stop();
+    }
+    d.fx = e.x; d.fy = e.y;
+    d.x = e.x; d.y = e.y;
+    setDragFeedback(d, findDropProject(e.x, e.y, d));
+    if (_dragFreeze) renderNodesOnly();
+  }
   function dragEnded(e, d) {
+    const wasFrozen = _dragFreeze;
+    const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
+    _dragStart = null;
+    _dragFreeze = false;
+    if (!_ctrlDown && !(e.sourceEvent && e.sourceEvent.ctrlKey)) setForceFrozen(false);
     if (!e.active) _simulation.alphaTarget(0);
     d.fx = null; d.fy = null;
-    const snap = findNearestProject(e.x, e.y, d.project_id, 120);
-    if (snap) sendToBackend({ action: "move_node", xid: d.xid, project_id: snap, with_children: false });
+    d.vx = 0; d.vy = 0;
+    if (moved < 8) {
+      clearDragFeedback();
+      _dragDropHulls = null;
+      return;
+    }
+
+    const target = findDropProject(e.x, e.y, d);
+    const ownProject = String(d.xid);
+    const nextProject = target || ownProject;
+    if (nextProject !== d.project_id) {
+      d.project_id = nextProject;
+      _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
+      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: false });
+    }
+
+    clearDragFeedback();
+    _dragDropHulls = null;
+    if (wasFrozen && !_forceFrozen) _simulation.alpha(0.15).restart();
+  }
+
+  function findDropProject(x, y, dragged) {
+    const containing = findProjectContainingPoint(x, y, dragged);
+    if (containing) return containing;
+    return findNearestProject(x, y, dragged.project_id, 140);
+  }
+
+  function findProjectContainingPoint(x, y, dragged) {
+    const hulls = _dragDropHulls || buildDropHulls(dragged);
+    for (const h of hulls) {
+      if (h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
+    }
+    return null;
+  }
+
+  function buildDropHulls(dragged) {
+    return _data.projects.map(p => {
+      const members = _data.nodes.filter(n =>
+        n.is_alive && n.project_id === p.id && n.xid !== dragged.xid);
+      if (!members.length) return { pid: p.id, hull: null };
+      const pad = LAYOUT.hullPad + LAYOUT.foreignCardBoundaryGap;
+      const pts = members.flatMap(n => [
+        [(n.x || 0) - pad, (n.y || 0) - pad],
+        [(n.x || 0) + pad, (n.y || 0) - pad],
+        [(n.x || 0) + pad, (n.y || 0) + pad],
+        [(n.x || 0) - pad, (n.y || 0) + pad],
+      ]);
+      return { pid: p.id, hull: d3.polygonHull(pts) };
+    });
+  }
+
+  function setDragFeedback(d, targetProjectId) {
+    const node = d3.select(`[data-xid="${d.xid}"]`);
+    node.classed("dragging", true)
+      .classed("drop-into", !!targetProjectId)
+      .classed("drop-out", !targetProjectId);
+
+    _g.select(".hulls-layer").selectAll(".hull-group")
+      .classed("drop-target", h => !!targetProjectId && h.pid === targetProjectId);
+  }
+
+  function clearDragFeedback() {
+    d3.selectAll(".node-g")
+      .classed("dragging", false)
+      .classed("drop-into", false)
+      .classed("drop-out", false);
+    _g.select(".hulls-layer").selectAll(".hull-group")
+      .classed("drop-target", false);
   }
 
   function findNearestProject(x, y, currentPid, threshold) {
@@ -412,9 +696,6 @@
   function showContextMenu(e, d) {
     _ctxNode = d;
     const menu = document.getElementById("context-menu");
-    menu.style.display = "block";
-    menu.style.left = Math.min(e.clientX, window.innerWidth  - 200) + "px";
-    menu.style.top  = Math.min(e.clientY, window.innerHeight - 200) + "px";
     e.stopPropagation();
 
     const projectList = document.getElementById("ctx-project-list");
@@ -430,6 +711,14 @@
       };
       projectList.appendChild(item);
     });
+
+    menu.style.display = "block";
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const rect = menu.getBoundingClientRect();
+    const pad = 8;
+    menu.style.left = Math.max(pad, Math.min(e.clientX, window.innerWidth - rect.width - pad)) + "px";
+    menu.style.top = Math.max(pad, Math.min(e.clientY, window.innerHeight - rect.height - pad)) + "px";
   }
 
   function hideContextMenu() {
