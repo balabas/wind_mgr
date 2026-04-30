@@ -30,7 +30,7 @@ class ScreenshotCapture:
     def __init__(self) -> None:
         THUMBS_DIR.mkdir(parents=True, exist_ok=True)
         ICONS_DIR.mkdir(parents=True, exist_ok=True)
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="screenshot")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screenshot")
         self._display: GdkX11.X11Display | None = None
         self._thumb_w = DEFAULT_THUMB_W
         self._thumb_h = DEFAULT_THUMB_H
@@ -111,7 +111,7 @@ class ScreenshotCapture:
 
     def _capture_worker(self, xid: int,
                         callback: Callable[[bool], None] | None) -> None:
-        success = self._try_gdk(xid) or self._try_ffmpeg(xid)
+        success = self._window_exists(xid) and (self._try_gdk(xid) or self._try_ffmpeg(xid))
         if callback is not None:
             GLib.idle_add(callback, success)
 
@@ -121,8 +121,11 @@ class ScreenshotCapture:
         done = threading.Event()
 
         def _on_main():
+            trapped = False
             try:
                 display = self._get_display()
+                Gdk.error_trap_push()
+                trapped = True
                 win = GdkX11.X11Window.foreign_new_for_display(display, xid)
                 if win is None:
                     result.append(False)
@@ -147,11 +150,28 @@ class ScreenshotCapture:
                 log.debug("GDK capture failed xid=%d", xid, exc_info=True)
                 result.append(False)
             finally:
+                if trapped:
+                    Gdk.flush()
+                    if Gdk.error_trap_pop():
+                        if result:
+                            result[-1] = False
+                        else:
+                            result.append(False)
+                        log.debug("GDK capture skipped stale xid=%d after X error", xid)
                 done.set()
 
         GLib.idle_add(_on_main)
         done.wait(timeout=3.0)
         return bool(result and result[0])
+
+    def _window_exists(self, xid: int) -> bool:
+        try:
+            screen = Wnck.Screen.get_default()
+            screen.force_update()
+            return any(w.get_xid() == xid for w in screen.get_windows())
+        except Exception:
+            log.debug("Failed to check window existence xid=%d", xid, exc_info=True)
+            return False
 
     def _try_ffmpeg(self, xid: int) -> bool:
         """Capture via ffmpeg x11grab selecting the window by geometry."""

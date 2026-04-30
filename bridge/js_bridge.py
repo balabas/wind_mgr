@@ -34,6 +34,9 @@ class JSBridge:
         self._bg_refresh_tag: int | None = None
         self._bg_refresh_idx: int = 0
         self._capture_inflight: set[int] = set()
+        self._thumb_update_tag: int | None = None
+        self._pending_thumb_xids: set[int] = set()
+        self._last_thumb_urls: dict[int, tuple[str, str]] = {}
         self._before_activate_cb: Callable[[], None] | None = None
         self._ui_visible = False
         self._last_graph_push_at = 0.0
@@ -63,6 +66,8 @@ class JSBridge:
 
     def set_ui_visible(self, visible: bool) -> None:
         self._ui_visible = visible
+        if not visible:
+            self._pending_thumb_xids.clear()
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
@@ -145,15 +150,21 @@ class JSBridge:
         if self._webview is None or not xids:
             return
         try:
-            items = [
-                {
+            items = []
+            for xid in xids:
+                if self._reg.get(xid) is None:
+                    continue
+                thumb_url = self._capture.thumb_url(xid)
+                icon_url = self._capture.icon_url(xid)
+                urls = (thumb_url, icon_url)
+                if self._last_thumb_urls.get(xid) == urls:
+                    continue
+                self._last_thumb_urls[xid] = urls
+                items.append({
                     "xid": xid,
-                    "thumb_url": self._capture.thumb_url(xid),
-                    "icon_url": self._capture.icon_url(xid),
-                }
-                for xid in xids
-                if self._reg.get(xid) is not None
-            ]
+                    "thumb_url": thumb_url,
+                    "icon_url": icon_url,
+                })
             if not items:
                 return
             js = (
@@ -166,13 +177,25 @@ class JSBridge:
                 js, -1, None, None, None,
                 self._js_done_cb, None
             )
-            log.debug("push_thumbnail_update: sent %d thumbnails", len(items))
         except Exception:
             log.exception("push_thumbnail_update failed")
 
     def _on_thumbnail_updated(self, xids: list[int]) -> None:
-        if self._ui_visible:
-            self.push_thumbnail_update(xids)
+        if not self._ui_visible:
+            return
+        self._pending_thumb_xids.update(xids)
+        if self._thumb_update_tag is None:
+            self._thumb_update_tag = GLib.timeout_add(250, self._flush_thumbnail_updates)
+
+    def _flush_thumbnail_updates(self) -> bool:
+        self._thumb_update_tag = None
+        if not self._ui_visible:
+            self._pending_thumb_xids.clear()
+            return False
+        xids = list(self._pending_thumb_xids)
+        self._pending_thumb_xids.clear()
+        self.push_thumbnail_update(xids)
+        return False
 
     def _js_done_cb(self, source, result, _user_data) -> None:
         try:
@@ -394,7 +417,7 @@ class JSBridge:
     def _on_focus_changed(self, new_xid: int | None, old_xid: int | None, **_kw) -> None:
         if self._ui_visible:
             self.push_active_window()
-        if old_xid is None or old_xid == new_xid:
+        if old_xid is None or old_xid == new_xid or new_xid is None:
             return
         log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
         self._capture_one(old_xid)

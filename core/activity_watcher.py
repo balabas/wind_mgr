@@ -29,6 +29,7 @@ class ActivityWatcher:
         self._registry = registry
         self._screen: Wnck.Screen | None = None
         self._active_xid: int | None = None
+        self._last_trackable_active_xid: int | None = None
 
     def start(self) -> None:
         self._screen = Wnck.Screen.get_default()
@@ -44,8 +45,9 @@ class ActivityWatcher:
         self._screen.connect("active-window-changed", self._on_active_window_changed)
 
         active = self._screen.get_active_window()
-        if active:
+        if active and self._should_track(active):
             self._active_xid = active.get_xid()
+            self._last_trackable_active_xid = self._active_xid
 
         bus.emit(EVT_FOCUS_CHANGED, new_xid=self._active_xid, old_xid=None)
         log.info("ActivityWatcher started, tracking %d existing windows",
@@ -77,13 +79,13 @@ class ActivityWatcher:
         if self._registry.get(xid) is not None:
             return
 
-        # Determine parent: the window active before this one appeared
-        parent_xid = self._active_xid
-        prev = screen.get_previously_active_window()
-        if prev is not None:
-            parent_xid = prev.get_xid()
+        # Wnck's previously-active window is unreliable during window-opened;
+        # use our own last non-wind_mgr focused window as the launch parent.
+        parent_xid = self._last_trackable_active_xid
+        if parent_xid == xid:
+            parent_xid = None
         parent = self._registry.get(parent_xid) if parent_xid is not None else None
-        if parent is not None and _is_self_record(parent):
+        if parent is None or not parent.is_alive or _is_self_record(parent):
             parent_xid = None
 
         record = self._build_record(window, parent_xid=parent_xid)
@@ -111,6 +113,7 @@ class ActivityWatcher:
 
         if new_xid and (record := self._registry.get(new_xid)):
             record.last_focused_at = time.time()
+            self._last_trackable_active_xid = new_xid
 
         self._active_xid = new_xid
         bus.emit(EVT_FOCUS_CHANGED, new_xid=new_xid, old_xid=old_xid)
