@@ -238,6 +238,8 @@ class JSBridge:
                 self._set_auto_refresh(msg.get("enabled", False))
             elif action == "refresh_active":
                 self.push_active_window()
+            elif action == "remove_link":
+                self._remove_link(int(msg["xid"]))
             elif action == "toggle_project":
                 pass  # future: collapse project
         except Exception:
@@ -270,6 +272,17 @@ class JSBridge:
             return
 
         self._tree.move_node(xid, target_project_id, with_children=with_children)
+        self._reg.save()
+        self.push_graph()
+
+    def _remove_link(self, xid: int) -> None:
+        record = self._reg.get(xid)
+        if record is None or record.parent_xid is None:
+            return
+        parent = self._reg.get(record.parent_xid)
+        if parent and xid in parent.children_xids:
+            parent.children_xids.remove(xid)
+        record.parent_xid = None
         self._reg.save()
         self.push_graph()
 

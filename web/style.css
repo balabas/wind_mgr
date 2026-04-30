@@ -54,7 +54,13 @@ svg#graph {
   stroke-width: 1.5;
   stroke-opacity: 0.6;
   fill: none;
-  marker-end: url(#arrowhead);
+  marker-mid: url(#arrowhead);
+}
+.link-hit {
+  stroke: transparent;
+  stroke-width: 14;
+  fill: none;
+  cursor: pointer;
 }
 .link.flash {
   stroke: #fff;
@@ -258,6 +264,35 @@ svg#graph {
   color: #666;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+#link-context-menu {
+  position: fixed;
+  background: #1e1e3e;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+  min-width: 160px;
+  z-index: 9999;
+  display: none;
+}
+#link-context-menu .menu-header {
+  padding: 6px 14px 4px;
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+#link-context-menu .menu-item {
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #ccc;
+  transition: background 0.1s;
+}
+#link-context-menu .menu-item:hover {
+  background: #2a2a5a;
+  color: #fff;
 }
 
 /* Toolbar */

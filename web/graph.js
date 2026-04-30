@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0006";
+  const GRAPH_VERSION = "20260501-0009";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -135,7 +135,7 @@
     _g.append("g").attr("class", "nodes-layer");
     _g.append("g").attr("class", "labels-layer");
 
-    document.addEventListener("click", hideContextMenu);
+    document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", () => { _ctrlDown = false; setForceFrozen(false); });
@@ -246,58 +246,36 @@
 
     _projectAnchors = computeProjectAnchors(nodes);
 
-    // Preserve existing positions, but drop old velocity so refreshes do not
-    // keep reintroducing drift into a newly started simulation.
+    const xidToNode = {};
+    nodes.forEach(n => { xidToNode[n.xid] = n; });
+
+    // First pass: restore positions for existing nodes
     nodes.forEach(n => {
       const sel = _g.select(`[data-xid="${n.xid}"]`);
       const old = sel.node() ? sel.datum() : null;
       if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; }
     });
 
-    const xidToNode = {};
-    nodes.forEach(n => { xidToNode[n.xid] = n; });
-    const linkData = edges
-      .map(e => ({ source: xidToNode[e.source], target: xidToNode[e.target] }))
-      .filter(e => e.source && e.target);
+    // Second pass: seed new nodes near parent or project anchor (avoids top-left spawn)
+    nodes.forEach(n => {
+      if (n.x != null) return;
+      const par = xidToNode[n.parent_xid];
+      const anchor = _projectAnchors[n.project_id];
+      if (par && par.x != null) {
+        // Place at link distance so sim starts near equilibrium and doesn't need to push hard
+        const angle = Math.random() * 2 * Math.PI;
+        const d = LAYOUT.sameProjectLinkDistance || 180;
+        n.x = par.x + Math.cos(angle) * d;
+        n.y = par.y + Math.sin(angle) * d;
+      } else {
+        const base = anchor || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+        n.x = base.x + (Math.random() - 0.5) * 100;
+        n.y = base.y + (Math.random() - 0.5) * 100;
+      }
+      n.vx = 0; n.vy = 0;
+    });
 
-    // ── Simulation ──────────────────────────────────────────────────────
-    if (_simulation) _simulation.stop();
-    _simulation = d3.forceSimulation(nodes)
-      .force("link", d3.forceLink(linkData).id(d => d.xid)
-        .distance(d => d.source.project_id === d.target.project_id
-          ? LAYOUT.sameProjectLinkDistance : LAYOUT.crossProjectLinkDistance)
-        .strength(d => d.source.project_id === d.target.project_id
-          ? LAYOUT.sameProjectLinkStrength : LAYOUT.crossProjectLinkStrength))
-      .force("charge", d3.forceManyBody().strength(LAYOUT.nodeCharge))
-      .force("collide", d3.forceCollide(d => Math.max(LAYOUT.nodeCollideRadius, cardRadius(d))))
-      .force("cluster", forceCluster(nodes))
-      .force("projectCollide", forceProjectCollide(nodes))
-      .force("projectRectCollide", forceProjectRectCollide(nodes))
-      .force("projectBounds", forceProjectBounds(nodes))
-      .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(LAYOUT.projectAnchorStrength))
-      .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(LAYOUT.projectAnchorStrength))
-      .velocityDecay(LAYOUT.velocityDecay)
-      .alphaDecay(LAYOUT.alphaDecay)
-      .on("tick", ticked);
-    const shouldSettle = Date.now() < _settleAfterMoveUntil;
-    if (_forceFrozen || (!topologyChanged && !shouldSettle)) {
-      _simulation.stop();
-      _simulation.alpha(0).alphaTarget(0);
-      nodes.forEach(n => { n.vx = 0; n.vy = 0; });
-    } else {
-      _simulation
-        .alphaTarget(0)
-        .alpha(Math.max(_simulation.alpha(), topologyChanged ? 0.65 : 0.45))
-        .restart();
-    }
-
-    // ── Edges ──────────────────────────────────────────────────────────
-    const link = _g.select(".links-layer")
-      .selectAll(".link").data(linkData, d => `${d.source.xid}-${d.target.xid}`);
-    link.enter().append("path").attr("class", "link").merge(link);
-    link.exit().remove();
-
-    // ── Nodes (SVG native: g > rect + image + text) ─────────────────
+    // ── Nodes DOM ───────────────────────────────────────────────────────
     const node = _g.select(".nodes-layer")
       .selectAll(".node-g")
       .data(nodes, d => d.xid);
@@ -314,55 +292,77 @@
           .on("drag",  dragged)
           .on("end",   dragEnded));
 
-    // Card background
-    nodeEnter.append("rect")
-      .attr("class", "node-bg");
-
-    // Per-card clip path so thumbnail + overlay respect rounded corners
+    nodeEnter.append("rect").attr("class", "node-bg");
     nodeEnter.append("clipPath")
       .attr("id", d => `card-clip-${d.xid}`)
-      .append("rect")
-        .attr("class", "card-clip-rect")
-        .attr("rx", 8);
-
-    // Thumbnail image clipped to card shape
+      .append("rect").attr("class", "card-clip-rect").attr("rx", 8);
     nodeEnter.append("image")
       .attr("class", "node-thumb")
       .attr("preserveAspectRatio", "xMidYMid meet")
       .attr("clip-path", d => `url(#card-clip-${d.xid})`);
-
-    nodeEnter.append("rect")
-      .attr("class", "active-overlay");
-
-    // App icon badge
-    nodeEnter.append("image")
-      .attr("class", "node-icon")
-      .attr("width", 20).attr("height", 20);
-
+    nodeEnter.append("rect").attr("class", "active-overlay");
+    nodeEnter.append("image").attr("class", "node-icon").attr("width", 20).attr("height", 20);
     nodeEnter.append("title");
+    nodeEnter.append("path").attr("class", "node-title-bg");
+    nodeEnter.append("text").attr("class", "node-title").attr("text-anchor", "middle").attr("x", 0);
+    nodeEnter.append("text").attr("class", "node-breadcrumb").attr("text-anchor", "middle").attr("x", 0);
 
-    // Title background bar (path so only bottom corners are rounded)
-    nodeEnter.append("path")
-      .attr("class", "node-title-bg");
-
-    // Title
-    nodeEnter.append("text")
-      .attr("class", "node-title")
-      .attr("text-anchor", "middle")
-      .attr("x", 0);
-
-    // Breadcrumb
-    nodeEnter.append("text")
-      .attr("class", "node-breadcrumb")
-      .attr("text-anchor", "middle")
-      .attr("x", 0);
-
-    const allNodes = nodeEnter.merge(node);
-    allNodes.each(function (d) { renderCard(d3.select(this), d); });
+    nodeEnter.merge(node).each(function (d) { renderCard(d3.select(this), d); });
     node.exit().remove();
+
+    // Non-topology updates (thumbnails, titles): skip simulation rebuild to avoid memory/CPU leak
     if (!topologyChanged) {
       renderNodesOnly();
       renderHulls();
+      return;
+    }
+
+    const linkData = edges
+      .map(e => ({ source: xidToNode[e.source], target: xidToNode[e.target] }))
+      .filter(e => e.source && e.target);
+
+    // ── Edges ───────────────────────────────────────────────────────────
+    const linkKey = d => `${d.source.xid}-${d.target.xid}`;
+    const link = _g.select(".links-layer")
+      .selectAll(".link").data(linkData, linkKey);
+    link.enter().append("path").attr("class", "link").merge(link);
+    link.exit().remove();
+
+    const linkHit = _g.select(".links-layer")
+      .selectAll(".link-hit").data(linkData, linkKey);
+    linkHit.enter().append("path")
+      .attr("class", "link-hit")
+      .on("contextmenu", (e, d) => { e.preventDefault(); e.stopPropagation(); showLinkContextMenu(e, d); })
+      .merge(linkHit);
+    linkHit.exit().remove();
+
+    // ── Simulation (rebuilt only on topology changes) ────────────────────
+    if (_simulation) _simulation.stop();
+    _simulation = d3.forceSimulation(nodes)
+      .force("link", d3.forceLink(linkData).id(d => d.xid)
+        .distance(d => d.source.project_id === d.target.project_id
+          ? LAYOUT.sameProjectLinkDistance : LAYOUT.crossProjectLinkDistance)
+        .strength(d => d.source.project_id === d.target.project_id
+          ? LAYOUT.sameProjectLinkStrength : LAYOUT.crossProjectLinkStrength))
+      .force("charge", d3.forceManyBody().strength(LAYOUT.nodeCharge))
+      .force("collide", d3.forceCollide(d => Math.max(LAYOUT.nodeCollideRadius, cardRadius(d))))
+      .force("cluster", forceCluster(nodes))
+      .force("projectCollide", forceProjectCollide(nodes))
+      .force("projectRectCollide", forceProjectRectCollide(nodes))
+      .force("projectBounds", forceProjectBounds(nodes))
+      .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(LAYOUT.projectAnchorStrength))
+      .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(LAYOUT.projectAnchorStrength))
+      .force("hierarchy", forceHierarchy(linkData))
+      .velocityDecay(LAYOUT.velocityDecay)
+      .alphaDecay(LAYOUT.alphaDecay)
+      .on("tick", ticked);
+
+    if (_forceFrozen) {
+      _simulation.stop();
+      _simulation.alpha(0).alphaTarget(0);
+      nodes.forEach(n => { n.vx = 0; n.vy = 0; });
+    } else {
+      _simulation.alphaTarget(0).alpha(0.65).restart();
     }
   }
 
@@ -463,15 +463,28 @@
     return Math.hypot(size.w, size.h) / 2;
   }
 
+  // Returns the point on the boundary of rect (cx,cy,hw,hh) facing toward (tx,ty)
+  function rectEdgePoint(cx, cy, tx, ty, hw, hh) {
+    const dx = tx - cx, dy = ty - cy;
+    if (!dx && !dy) return [cx, cy];
+    const t = Math.min(hw / Math.abs(dx), hh / Math.abs(dy));
+    return [cx + dx * t, cy + dy * t];
+  }
+
+  function _linkPath(d) {
+    const sx = d.source.x || 0, sy = d.source.y || 0;
+    const tx = d.target.x || 0, ty = d.target.y || 0;
+    const ss = cardSize(d.source), ts = cardSize(d.target);
+    const [x1, y1] = rectEdgePoint(sx, sy, tx, ty, ss.w / 2, ss.h / 2);
+    const [x2, y2] = rectEdgePoint(tx, ty, sx, sy, ts.w / 2, ts.h / 2);
+    // Three-point path so marker-mid places the arrowhead at the midpoint
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return `M${x1},${y1}L${mx},${my}L${x2},${y2}`;
+  }
+
   function ticked() {
-    _g.select(".links-layer").selectAll(".link")
-      .attr("d", d => {
-        const sx = d.source.x, sy = d.source.y;
-        const tx = d.target.x, ty = d.target.y;
-        const dx = tx - sx, dy = ty - sy;
-        const dr = Math.sqrt(dx * dx + dy * dy) * 1.4;
-        return `M${sx},${sy} A${dr},${dr} 0 0,1 ${tx},${ty}`;
-      });
+    _g.select(".links-layer").selectAll(".link").attr("d", _linkPath);
+    _g.select(".links-layer").selectAll(".link-hit").attr("d", _linkPath);
 
     renderNodesOnly();
     renderHulls();
@@ -560,6 +573,23 @@
       };
     });
     return anchors;
+  }
+
+  function forceHierarchy(linkData) {
+    const gap = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 120;
+    const strength = LAYOUT.hierarchyStrength != null ? LAYOUT.hierarchyStrength : 0.2;
+    return function force(alpha) {
+      linkData.forEach(e => {
+        const p = e.source, c = e.target;
+        if (!p || !c) return;
+        const dy = (c.y || 0) - (p.y || 0);
+        if (dy < gap) {
+          const push = (gap - dy) * strength * alpha * 0.5;
+          c.vy += push;
+          p.vy -= push;
+        }
+      });
+    };
   }
 
   function forceCluster(nodes) {
@@ -802,7 +832,7 @@
       }
       d.project_id = nextProject;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
-      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: false });
+      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: true });
     }
 
     clearDragFeedback();
@@ -992,7 +1022,7 @@
       item.className = "menu-item";
       item.textContent = "→ " + p.name;
       item.onclick = () => {
-        sendToBackend({ action: "move_node", xid: d.xid, project_id: p.id, with_children: false });
+        sendToBackend({ action: "move_node", xid: d.xid, project_id: p.id, with_children: true });
         hideContextMenu();
       };
       projectList.appendChild(item);
@@ -1012,6 +1042,33 @@
     _ctxNode = null;
   }
 
+  let _ctxLink = null;
+  function showLinkContextMenu(e, d) {
+    hideContextMenu();
+    _ctxLink = d;
+    const menu = document.getElementById("link-context-menu");
+    menu.style.display = "block";
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const rect = menu.getBoundingClientRect();
+    const pad = 8;
+    menu.style.left = Math.max(pad, Math.min(e.clientX, window.innerWidth - rect.width - pad)) + "px";
+    menu.style.top = Math.max(pad, Math.min(e.clientY, window.innerHeight - rect.height - pad)) + "px";
+  }
+
+  function hideLinkContextMenu() {
+    document.getElementById("link-context-menu").style.display = "none";
+    _ctxLink = null;
+  }
+
+  function ctxLinkAction(action) {
+    if (!_ctxLink) return;
+    if (action === "remove_link") {
+      sendToBackend({ action: "remove_link", xid: _ctxLink.target.xid });
+    }
+    hideLinkContextMenu();
+  }
+
   function ctxAction(action) {
     if (!_ctxNode) return;
     if (action === "activate") {
@@ -1021,6 +1078,8 @@
     } else if (action === "rename_project") {
       const name = prompt("New project name:", _projectMap[_ctxNode.project_id]?.name || "");
       if (name) sendToBackend({ action: "rename_project", project_id: _ctxNode.project_id, name });
+    } else if (action === "detach") {
+      sendToBackend({ action: "remove_link", xid: _ctxNode.xid });
     }
     hideContextMenu();
   }
@@ -1045,6 +1104,7 @@
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   window.ctxAction = ctxAction;
+  window.ctxLinkAction = ctxLinkAction;
   document.addEventListener("DOMContentLoaded", init);
 
 })();
