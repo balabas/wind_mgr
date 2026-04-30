@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260430-2118";
+  const GRAPH_VERSION = "20260430-2122";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -39,6 +39,7 @@
     dropIntoPad: 30,
     dropHullPad: 30,
     dropNearestDistance: 0,
+    geometrySpacing: 620,
     projectMarginX: 260,
     projectMarginY: 220,
     projectCellW: 720,
@@ -78,9 +79,20 @@
     Promise.resolve(window.windMgrConfigReady)
       .then(() => {
         Object.assign(LAYOUT, (window.windMgrConfig || {}).layout || {});
+        applySpacingPreset((window.windMgrConfig || {}).layout || {});
         _initInner();
       })
       .catch(e => { console.error("init failed:", e.toString(), e.stack || ""); });
+  }
+
+  function applySpacingPreset(config) {
+    const spacing = Number(LAYOUT.geometrySpacing);
+    const has = key => Object.prototype.hasOwnProperty.call(config, key);
+    if (!has("projectCellW")) LAYOUT.projectCellW = spacing;
+    if (!has("projectCellH")) LAYOUT.projectCellH = spacing;
+    if (!has("projectRectGap")) LAYOUT.projectRectGap = Math.round(spacing * 0.42);
+    if (!has("projectCirclePadding")) LAYOUT.projectCirclePadding = Math.round(spacing * 0.5);
+    if (!has("crossProjectLinkDistance")) LAYOUT.crossProjectLinkDistance = Math.round(spacing * 0.95);
   }
 
   function _initInner() {
