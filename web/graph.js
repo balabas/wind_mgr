@@ -248,7 +248,6 @@
       .force("projectBounds", forceProjectBounds(nodes))
       .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(LAYOUT.projectAnchorStrength))
       .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(LAYOUT.projectAnchorStrength))
-      .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2).strength(LAYOUT.centerStrength))
       .velocityDecay(LAYOUT.velocityDecay)
       .alphaDecay(LAYOUT.alphaDecay)
       .on("tick", ticked);
@@ -512,6 +511,7 @@
     return function force(alpha) {
       const centroids = {}, counts = {};
       nodes.forEach(n => {
+        if (n.fx != null) return;  // exclude pinned/dragged nodes from centroid
         const pid = n.project_id;
         if (!centroids[pid]) { centroids[pid] = { x: 0, y: 0 }; counts[pid] = 0; }
         centroids[pid].x += n.x || 0;
@@ -523,6 +523,7 @@
         centroids[pid].y /= counts[pid];
       });
       nodes.forEach(n => {
+        if (n.fx != null) return;  // don't push pinned nodes
         const c = centroids[n.project_id];
         if (!c) return;
         n.vx += (c.x - (n.x || 0)) * strength * alpha;
@@ -734,7 +735,13 @@
 
     clearDragFeedback();
     _dragDropHulls = null;
-    if (!_forceFrozen) _simulation.alpha(0.5).restart();
+    if (!_forceFrozen) {
+      // If simulation has fully decayed, give it a gentle nudge to settle the
+      // freed card. If it is already running, don't change alpha — spiking it
+      // causes all forces to overshoot and drift.
+      if (_simulation.alpha() < 0.01) _simulation.alpha(0.1).restart();
+      else _simulation.restart();
+    }
   }
 
   function findDropProject(x, y, dragged) {
