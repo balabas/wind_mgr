@@ -127,6 +127,7 @@
       sendToBackend({ action: "toggle_auto_refresh", enabled: this.classList.contains("active") });
     });
     document.getElementById("btn-fit").addEventListener("click", fitView);
+    document.getElementById("btn-reset").addEventListener("click", resetLayout);
     window.setInterval(() => sendToBackend({ action: "refresh_active" }), 300);
 
     _initialized = true;
@@ -736,10 +737,7 @@
     clearDragFeedback();
     _dragDropHulls = null;
     if (!_forceFrozen) {
-      // If simulation has fully decayed, give it a gentle nudge to settle the
-      // freed card. If it is already running, don't change alpha — spiking it
-      // causes all forces to overshoot and drift.
-      if (_simulation.alpha() < 0.01) _simulation.alpha(0.1).restart();
+      if (_simulation.alpha() < 0.05) _simulation.alpha(0.3).restart();
       else _simulation.restart();
     }
   }
@@ -824,6 +822,25 @@
 
   function toggleProject(pid) {
     sendToBackend({ action: "toggle_project", project_id: pid });
+  }
+
+  function resetLayout() {
+    if (!_data) return;
+    const alive = _data.nodes.filter(n => n.is_alive);
+    _projectAnchors = computeProjectAnchors(alive);
+
+    // Pre-place each node near its project anchor so render()'s position-
+    // preservation code picks up fresh coordinates instead of stale ones,
+    // and forces don't need to drag cards all the way from (0,0).
+    _g.select(".nodes-layer").selectAll(".node-g").each(function (d) {
+      const a = _projectAnchors[d.project_id] || {};
+      d.x = (a.x || window.innerWidth / 2)  + (Math.random() - 0.5) * 80;
+      d.y = (a.y || window.innerHeight / 2) + (Math.random() - 0.5) * 80;
+      d.vx = 0; d.vy = 0;
+    });
+
+    render(true);   // simulation starts from anchor positions
+    fitView();      // frame those positions immediately (no jump)
   }
 
   function fitView() {
