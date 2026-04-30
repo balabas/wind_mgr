@@ -690,21 +690,18 @@
     d.fx = d.x; d.fy = d.y;
   }
   function dragged(e, d) {
-    _dragFreeze = eventWantsFreeze(e);
-    const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
-    if (!_dragMoved && moved >= 8) {
-      _dragMoved = true;
-      if (!_dragFreeze) _simulation.alphaTarget(0.3).restart();
-    }
-    if (_dragFreeze) {
+    if (_dragFreeze || eventWantsFreeze(e)) {
+      _dragFreeze = true;
       _forceFrozen = true;
       _simulation.stop();
     }
+    const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
+    if (!_dragMoved && moved >= 8) _dragMoved = true;
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
     setDragFeedback(d, findDropProject(e.x, e.y, d));
     renderNodesOnly();
-    if (!_dragFreeze) renderHulls();
+    renderHulls();
   }
   function dragEnded(e, d) {
     const wasFrozen = _dragFreeze;
@@ -718,10 +715,7 @@
     d.fx = null; d.fy = null;
     d.vx = 0; d.vy = 0;
     if (moved < 8) {
-      if (restore) {
-        d.x = restore.x;
-        d.y = restore.y;
-      }
+      if (restore) { d.x = restore.x; d.y = restore.y; }
       stopLayoutMotion();
       renderNodesOnly();
       clearDragFeedback();
@@ -740,7 +734,7 @@
 
     clearDragFeedback();
     _dragDropHulls = null;
-    if (wasFrozen && !_forceFrozen) _simulation.alpha(0.15).restart();
+    if (!_forceFrozen) _simulation.alpha(0.5).restart();
   }
 
   function findDropProject(x, y, dragged) {
