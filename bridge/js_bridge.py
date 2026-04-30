@@ -34,6 +34,7 @@ class JSBridge:
         self._bg_refresh_tag: int | None = None
         self._bg_refresh_idx: int = 0
         self._capture_inflight: set[int] = set()
+        self._before_activate_cb: Callable[[], None] | None = None
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
@@ -47,6 +48,9 @@ class JSBridge:
         )
 
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
+
+    def set_before_activate_callback(self, callback: Callable[[], None]) -> None:
+        self._before_activate_cb = callback
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
@@ -249,6 +253,8 @@ class JSBridge:
         screen.force_update()
         for w in screen.get_windows():
             if w.get_xid() == xid:
+                if self._before_activate_cb is not None:
+                    self._before_activate_cb()
                 ts = Gtk.get_current_event_time()
                 if not ts:
                     # Wnck expects a 32-bit X timestamp, not Unix epoch time.

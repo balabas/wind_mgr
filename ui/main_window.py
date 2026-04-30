@@ -58,6 +58,7 @@ class MainWindow:
         self._win.set_skip_pager_hint(True)
         self._win.connect("delete-event", self._on_delete)
         self._win.connect("key-press-event", self._on_key)
+        self._win.connect("map-event", self._on_map)
 
         # Center on screen
         self._win.set_position(Gtk.WindowPosition.CENTER)
@@ -92,6 +93,7 @@ class MainWindow:
 
         # Wire bridge to webview
         self._bridge.attach(self._webview)
+        self._bridge.set_before_activate_callback(self.hide)
 
         # Tray
         self._build_tray()
@@ -149,12 +151,26 @@ class MainWindow:
             return True
         return False
 
+    def _on_map(self, win: Gtk.Window, event) -> bool:
+        GLib.idle_add(self._maximize_visible_window)
+        GLib.timeout_add(100, self._maximize_visible_window)
+        return False
+
     def show(self) -> None:
         if self._win:
             self._win.show_all()
+            self._win.maximize()
             self._win.present()
+            GLib.idle_add(self._maximize_visible_window)
+            GLib.timeout_add(100, self._maximize_visible_window)
             self._visible = True
             self._bridge.push_graph()
+
+    def _maximize_visible_window(self) -> bool:
+        if self._win and self._visible:
+            self._win.maximize()
+            self._win.present()
+        return False
 
     def hide(self) -> None:
         if self._win:
