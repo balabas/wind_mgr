@@ -72,12 +72,13 @@ svg#graph {
   100% { stroke: #555; stroke-opacity: 0.6; stroke-width: 1.5; }
 }
 
+/* No drop-shadow filter on base cards — SVG filters block GPU compositing and
+   make every pan/zoom frame a full software repaint. Use stroke for depth. */
 .node-bg {
   fill: #101426;
   stroke: #3a4668;
   stroke-opacity: 1;
   stroke-width: 2.5;
-  filter: drop-shadow(0 3px 8px rgba(0,0,0,0.55));
 }
 .node-g:hover .node-bg {
   stroke: #4a90d9;
@@ -88,9 +89,11 @@ svg#graph {
   opacity: 0;
   pointer-events: none;
 }
+/* Active-window glow: filter only on the single active card, not all cards.
+   Animates stroke-width only — no filter in keyframes to keep GPU layer clean. */
 .node-g.active-window .node-bg {
   stroke: #00d4ff;
-  filter: drop-shadow(0 0 12px rgba(0,212,255,0.65));
+  stroke-width: 4;
   animation: active-window-flash 2.4s ease-in-out infinite;
 }
 .node-g.active-window .active-overlay {
@@ -104,35 +107,27 @@ svg#graph {
 }
 .node-g.selected .node-bg {
   stroke: #f39c12;
-  filter: drop-shadow(0 0 12px rgba(243,156,18,0.55));
+  stroke-width: 3.5;
+}
+/* During pan/zoom: kill all animations so the GPU layer stays stable */
+svg#graph.is-panning .node-g.active-window .node-bg,
+svg#graph.is-panning .node-g.active-window-new .node-bg {
+  animation: none;
+  stroke: #00d4ff;
+  stroke-width: 4;
+}
+svg#graph.is-panning .node-g.active-window .active-overlay,
+svg#graph.is-panning .node-g.active-window-new .active-overlay {
+  animation: none;
+  opacity: 0.15;
 }
 @keyframes active-window-flash {
-  0%, 100% {
-    stroke: #00d4ff;
-    stroke-opacity: 0.45;
-    stroke-width: 2.5;
-    filter: drop-shadow(0 0 7px rgba(0,212,255,0.45));
-  }
-  50% {
-    stroke: #8ff3ff;
-    stroke-opacity: 1;
-    stroke-width: 5;
-    filter: drop-shadow(0 0 20px rgba(0,212,255,0.95));
-  }
+  0%, 100% { stroke: #00d4ff; stroke-opacity: 0.5; stroke-width: 3; }
+  50%       { stroke: #8ff3ff; stroke-opacity: 1;   stroke-width: 5; }
 }
 @keyframes active-window-flash-start {
-  0%, 100% {
-    stroke: #8ff3ff;
-    stroke-opacity: 1;
-    stroke-width: 5;
-    filter: drop-shadow(0 0 20px rgba(0,212,255,0.95));
-  }
-  50% {
-    stroke: #00d4ff;
-    stroke-opacity: 0.45;
-    stroke-width: 2.5;
-    filter: drop-shadow(0 0 7px rgba(0,212,255,0.45));
-  }
+  0%, 100% { stroke: #8ff3ff; stroke-opacity: 1;   stroke-width: 5; }
+  50%       { stroke: #00d4ff; stroke-opacity: 0.5; stroke-width: 3; }
 }
 @keyframes active-overlay-flash {
   0%, 100% { opacity: 0.08; }
@@ -209,15 +204,15 @@ svg#graph {
 
 .node-g.dragging .node-bg {
   stroke-width: 4;
-  transition: stroke 0.12s ease, filter 0.12s ease;
+  transition: stroke 0.12s ease;
 }
 .node-g.dragging.drop-into .node-bg {
   stroke: #31d07f;
-  filter: drop-shadow(0 0 10px rgba(49,208,127,0.85));
+  stroke-width: 5;
 }
 .node-g.dragging.drop-out .node-bg {
   stroke: #ff9f43;
-  filter: drop-shadow(0 0 10px rgba(255,159,67,0.85));
+  stroke-width: 5;
 }
 
 /* Context menu */

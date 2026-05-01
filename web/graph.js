@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0020";
+  const GRAPH_VERSION = "20260501-0101";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -168,7 +168,8 @@
         _lastMiddleClickAt = now;
       }
     });
-    _g = _svg.append("g").attr("class", "graph-world");
+    _g = _svg.append("g").attr("class", "graph-world")
+      .style("will-change", "transform");
 
     _g.append("g").attr("class", "hulls-layer");
     _g.append("g").attr("class", "links-layer");
@@ -214,17 +215,23 @@
     }
     if (active) {
       _panPerformanceActive = true;
+      _svg.classed("is-panning", true);
       setBackendInteractionActive(true);
+      if (_simulation) _simulation.stop();
       return;
     }
     _panRestoreTimer = setTimeout(() => {
       _panPerformanceActive = false;
+      _svg.classed("is-panning", false);
       applyZoomTransform(_currentZoomTransform);
       setBackendInteractionActive(false);
       if (_deferredThumbItems.length) {
         const items = _deferredThumbItems;
         _deferredThumbItems = [];
         updateThumbnails(items);
+      }
+      if (_simulation && _simulation.alpha() > _simulation.alphaMin()) {
+        _simulation.restart();
       }
       _panRestoreTimer = null;
     }, 180);
@@ -437,7 +444,6 @@
     nodeEnter.append("title");
     nodeEnter.append("path").attr("class", "node-title-bg");
     nodeEnter.append("text").attr("class", "node-title").attr("text-anchor", "middle").attr("x", 0);
-    nodeEnter.append("text").attr("class", "node-breadcrumb").attr("text-anchor", "middle").attr("x", 0);
 
     nodeEnter.merge(node).each(function (d) { renderCard(d3.select(this), d); });
     node.exit().remove();
@@ -551,13 +557,6 @@
       .attr("y", hh - 8)
       .text(truncTitle);
 
-    // Breadcrumb
-    const bc = d.breadcrumb || "";
-    g.select(".node-breadcrumb")
-      .attr("y", hh - 3)
-      .text(bc)
-      .style("display", "none");
-
     const hoverLines = [
       displayTitle || d.title || `Window ${d.xid}`,
       d.active_file ? `File: ${d.active_file}` : "",
@@ -585,7 +584,20 @@
       const g = _g.select(".nodes-layer")
         .selectAll(".node-g")
         .filter(d => d.xid === item.xid);
-      if (!g.empty()) renderCard(g, node);
+      if (g.empty()) return;
+      if (Object.prototype.hasOwnProperty.call(item, "thumb_url")) {
+        g.select(".node-thumb")
+          .attr("href", node.thumb_url || "")
+          .style("display", node.thumb_url ? null : "none");
+      }
+      if (Object.prototype.hasOwnProperty.call(item, "icon_url")) {
+        const size = cardSize(node);
+        g.select(".node-icon")
+          .attr("href", node.icon_url || "")
+          .attr("x", size.w / 2 - 24)
+          .attr("y", size.h / 2 - 24)
+          .style("display", node.icon_url ? null : "none");
+      }
     });
   }
 
