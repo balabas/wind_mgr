@@ -59,6 +59,7 @@ class MainWindow:
         self._webview: WebKit2.WebView | None = None
         self._indicator: AppIndicator3.Indicator | None = None
         self._edge_zones: EdgeZoneWatcher | None = None
+        self._last_edge_monitor: int | None = None
 
     def build(self) -> None:
         self._win = Gtk.Window()
@@ -255,6 +256,11 @@ class MainWindow:
 
     def show(self, edge_context: EdgeZoneContext | None = None) -> None:
         if self._win:
+            monitor_changed = (
+                edge_context is not None
+                and self._last_edge_monitor is not None
+                and edge_context.monitor_index != self._last_edge_monitor
+            )
             self._bridge.set_ui_visible(True)
             self._win.show_all()
             self._win.deiconify()  # Разворачивает, если было свернуто
@@ -264,6 +270,11 @@ class MainWindow:
             self._win.present()
             GLib.idle_add(self._maximize_visible_window, edge_context)
             GLib.timeout_add(100, self._maximize_visible_window, edge_context)
+            if monitor_changed:
+                GLib.timeout_add(350, self._fit_visible_graph)
+                GLib.timeout_add(700, self._fit_visible_graph)
+            if edge_context is not None:
+                self._last_edge_monitor = edge_context.monitor_index
             self._visible = True
             self._bridge.push_graph()
 
@@ -291,6 +302,13 @@ class MainWindow:
                 self._move_to_monitor(edge_context)
             self._win.maximize()
             self._win.present()
+        return False
+
+    def _fit_visible_graph(self) -> bool:
+        if not self._visible or self._webview is None:
+            return False
+        js = "try{ if(window.windMgr) window.windMgr.fitView(); }catch(e){ console.error(e.toString()); }"
+        self._webview.evaluate_javascript(js, -1, None, None, None, None, None)
         return False
 
     def hide(self) -> None:

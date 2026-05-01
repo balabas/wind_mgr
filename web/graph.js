@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-1908";
+  const GRAPH_VERSION = "20260501-1917";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -367,6 +367,10 @@
         .filter(d => d.source.xid === src && d.target.xid === tgt)
         .classed("flash", true)
         .on("animationend", function () { d3.select(this).classed("flash", false); });
+    },
+
+    fitView() {
+      fitView();
     },
   };
 
