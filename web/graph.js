@@ -616,8 +616,13 @@
 
   function updateThumbnails(items) {
     if (_panPerformanceActive) {
-      _deferredThumbItems = mergeThumbnailItems(_deferredThumbItems, items || []);
-      return;
+      const immediate = (items || []).filter(item => isStreamingThumbReason(item.reason));
+      const deferred = (items || []).filter(item => !isStreamingThumbReason(item.reason));
+      if (deferred.length) {
+        _deferredThumbItems = mergeThumbnailItems(_deferredThumbItems, deferred);
+      }
+      if (!immediate.length) return;
+      items = immediate;
     }
     _perfThumbCount += (items || []).length;
     _perfReport();
@@ -648,6 +653,10 @@
           .style("display", node.icon_url ? null : "none");
       }
     });
+  }
+
+  function isStreamingThumbReason(reason) {
+    return reason === "hover" || reason === "active";
   }
 
   function mergeThumbnailItems(existing, incoming) {

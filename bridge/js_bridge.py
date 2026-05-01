@@ -38,6 +38,7 @@ class JSBridge:
         self._capture_running_xid: int | None = None
         self._capture_queue: OrderedDict[int, str] = OrderedDict()
         self._last_capture_at: dict[int, int] = {}
+        self._last_capture_reason: dict[int, str] = {}
         self._icon_captured_xids: set[int] = set()
         self._thumb_update_tag: int | None = None
         self._pending_thumb_xids: set[int] = set()
@@ -209,6 +210,7 @@ class JSBridge:
                     "xid": xid,
                     "thumb_url": thumb_url,
                     "icon_url": icon_url,
+                    "reason": self._last_capture_reason.get(xid, ""),
                 })
             if not items:
                 return
@@ -757,6 +759,7 @@ class JSBridge:
 
     def _start_capture(self, xid: int, reason: str) -> None:
         self._capture_running_xid = xid
+        self._last_capture_reason[xid] = reason
         self._last_capture_at[xid] = GLib.get_monotonic_time() // 1000
         log.debug(
             "capture start xid=%d reason=%s latency=%.0fms queue=%d",
