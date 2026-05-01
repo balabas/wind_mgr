@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-1917";
+  const GRAPH_VERSION = "20260501-1931";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -95,6 +95,7 @@
   let _pendingZoomTransform = null;
   let _zoomFrame = null;
   let _currentZoomTransform = d3.zoomIdentity;
+  let _viewCenterTarget = null;
   let _backendInteractionActive = false;
   let _backendInteractionStopTimer = null;
   let _lastHoverSentAt = {};
@@ -285,6 +286,7 @@
       if (_pendingZoomTransform) {
         _currentZoomTransform = _pendingZoomTransform;
         applyZoomTransform(_pendingZoomTransform);
+        rememberViewCenterTarget();
         _pendingZoomTransform = null;
       }
     });
@@ -371,6 +373,10 @@
 
     fitView() {
       fitView();
+    },
+
+    centerRememberedView() {
+      centerRememberedView();
     },
   };
 
@@ -1428,8 +1434,29 @@
     const scale = Math.min(0.9, Math.min(W / (x1 - x0), H / (y1 - y0)));
     const tx = (W - scale * (x0 + x1)) / 2;
     const ty = (H - scale * (y0 + y1)) / 2;
+    _viewCenterTarget = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
     _svg.transition().duration(600)
       .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  }
+
+  function rememberViewCenterTarget() {
+    if (!_currentZoomTransform) return;
+    const k = _currentZoomTransform.k || 1;
+    _viewCenterTarget = {
+      x: (window.innerWidth / 2 - _currentZoomTransform.x) / k,
+      y: (window.innerHeight / 2 - _currentZoomTransform.y) / k,
+    };
+  }
+
+  function centerRememberedView() {
+    if (!_svg || !_zoom) return;
+    if (!_viewCenterTarget) rememberViewCenterTarget();
+    if (!_viewCenterTarget) return;
+    const k = (_currentZoomTransform && _currentZoomTransform.k) || 1;
+    const tx = window.innerWidth / 2 - k * _viewCenterTarget.x;
+    const ty = window.innerHeight / 2 - k * _viewCenterTarget.y;
+    _svg.transition().duration(220)
+      .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
   }
 
   // ── Context menu ──────────────────────────────────────────────────────────

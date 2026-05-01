@@ -271,8 +271,8 @@ class MainWindow:
             GLib.idle_add(self._maximize_visible_window, edge_context)
             GLib.timeout_add(100, self._maximize_visible_window, edge_context)
             if monitor_changed:
-                GLib.timeout_add(350, self._fit_visible_graph)
-                GLib.timeout_add(700, self._fit_visible_graph)
+                GLib.timeout_add(350, self._center_visible_graph)
+                GLib.timeout_add(700, self._center_visible_graph)
             if edge_context is not None:
                 self._last_edge_monitor = edge_context.monitor_index
             self._visible = True
@@ -304,10 +304,14 @@ class MainWindow:
             self._win.present()
         return False
 
-    def _fit_visible_graph(self) -> bool:
+    def _center_visible_graph(self) -> bool:
         if not self._visible or self._webview is None:
             return False
-        js = "try{ if(window.windMgr) window.windMgr.fitView(); }catch(e){ console.error(e.toString()); }"
+        js = (
+            "try{"
+            "if(window.windMgr) window.windMgr.centerRememberedView();"
+            "}catch(e){ console.error(e.toString()); }"
+        )
         self._webview.evaluate_javascript(js, -1, None, None, None, None, None)
         return False
 
