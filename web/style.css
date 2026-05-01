@@ -54,7 +54,7 @@ svg#graph {
   stroke-width: 1.5;
   stroke-opacity: 0.6;
   fill: none;
-  marker-mid: url(#arrowhead);
+  marker-end: url(#arrowhead);
 }
 .link-hit {
   stroke: transparent;
@@ -196,6 +196,11 @@ svg#graph.is-panning .node-g.active-window-new .active-overlay {
 .node-g.dragging.drop-out .node-bg {
   stroke: #ff9f43;
   stroke-width: 5;
+}
+.node-g.drop-parent-target .node-bg {
+  stroke: #31d0c6;
+  stroke-width: 5;
+  stroke-dasharray: 8 4;
 }
 
 /* Context menu */

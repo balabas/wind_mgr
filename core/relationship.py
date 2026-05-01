@@ -112,11 +112,15 @@ class RelationshipTree:
         return list(seen.values())
 
     def move_node(self, xid: int, target_project_id: str,
-                  with_children: bool) -> None:
+                  with_children) -> None:
         record = self._reg.get(xid)
         if record is None:
             return
         previous_project_id = self.get_project_id(record)
+        if with_children == "same_project":
+            self._move_same_project_subtree(record, previous_project_id, target_project_id)
+            return
+        self._detach_from_parent_if_leaving_parent_project(record, target_project_id)
         if not with_children:
             # If a parent card is moved alone, give its direct children an
             # explicit old group. Otherwise they would inherit the parent's new
@@ -129,6 +133,122 @@ class RelationshipTree:
         if with_children:
             for child_xid in list(record.children_xids):
                 self.move_node(child_xid, target_project_id, with_children=True)
+
+    def set_parent(self, xid: int, parent_xid: int, with_children=False) -> None:
+        record = self._reg.get(xid)
+        parent = self._reg.get(parent_xid)
+        if record is None or parent is None or xid == parent_xid:
+            return
+        if self._would_create_cycle(xid, parent_xid):
+            log.warning("refusing parent cycle: child=%s parent=%s", xid, parent_xid)
+            return
+
+        source_project_id = self.get_project_id(record)
+        parent_project_id = self.get_project_id(parent)
+        old_parent = self._reg.get(record.parent_xid) if record.parent_xid is not None else None
+        if old_parent and xid in old_parent.children_xids:
+            old_parent.children_xids.remove(xid)
+
+        record.parent_xid = parent_xid
+        if xid not in parent.children_xids:
+            parent.children_xids.append(xid)
+
+        if with_children == "same_project":
+            self._move_same_project_subtree(record, source_project_id, parent_project_id)
+            return
+        self.move_node(xid, parent_project_id, with_children=with_children)
+
+    def _would_create_cycle(self, child_xid: int, parent_xid: int) -> bool:
+        current_xid: int | None = parent_xid
+        visited: set[int] = set()
+        while current_xid is not None:
+            if current_xid == child_xid:
+                return True
+            if current_xid in visited:
+                return True
+            visited.add(current_xid)
+            current = self._reg.get(current_xid)
+            if current is None:
+                return False
+            current_xid = current.parent_xid
+        return False
+
+    def _move_same_project_subtree(
+        self,
+        record: "WindowRecord",
+        source_project_id: str,
+        target_project_id: str,
+    ) -> None:
+        to_move = self._same_project_descendants(record, source_project_id)
+        move_xids = {r.xid for r in to_move}
+        pinned_children: dict[int, str] = {}
+        if record.parent_xid not in move_xids:
+            self._detach_from_parent_if_leaving_parent_project(record, target_project_id)
+
+        # Children outside the source project must not inherit the moved
+        # parent's new project through the parent chain.
+        for moving in to_move:
+            for child_xid in list(moving.children_xids):
+                if child_xid in move_xids:
+                    continue
+                child = self._reg.get(child_xid)
+                if child is not None and child.project_id is None:
+                    pinned_children[child.xid] = self.get_project_id(child)
+
+        for moving in to_move:
+            moving.project_id = target_project_id
+
+        for child_xid, project_id in pinned_children.items():
+            child = self._reg.get(child_xid)
+            if child is not None and child.project_id is None:
+                child.project_id = project_id
+
+    def _same_project_descendants(
+        self,
+        record: "WindowRecord",
+        source_project_id: str,
+    ) -> list["WindowRecord"]:
+        result: list["WindowRecord"] = []
+        stack = [record]
+        visited: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current.xid in visited:
+                continue
+            visited.add(current.xid)
+            if self.get_project_id(current) != source_project_id:
+                continue
+            result.append(current)
+            for child_xid in reversed(list(current.children_xids)):
+                child = self._reg.get(child_xid)
+                if child is not None:
+                    stack.append(child)
+        return result
+
+    def _detach_from_parent_if_leaving_parent_project(
+        self,
+        record: "WindowRecord",
+        target_project_id: str,
+    ) -> None:
+        if record.parent_xid is None:
+            return
+        parent = self._reg.get(record.parent_xid)
+        if parent is None:
+            record.parent_xid = None
+            return
+        parent_project_id = self.get_project_id(parent)
+        if parent_project_id == target_project_id:
+            return
+        if record.xid in parent.children_xids:
+            parent.children_xids.remove(record.xid)
+        log.debug(
+            "detached parent link: child=%s parent=%s parent_project=%s target_project=%s",
+            record.xid,
+            parent.xid,
+            parent_project_id,
+            target_project_id,
+        )
+        record.parent_xid = None
 
 
 def _is_self_record(record: "WindowRecord") -> bool:

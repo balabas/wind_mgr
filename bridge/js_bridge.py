@@ -370,6 +370,12 @@ class JSBridge:
                     str(msg["project_id"]),
                     with_children=msg.get("with_children", False),
                 )
+            elif action == "set_parent":
+                self._set_parent(
+                    int(msg["xid"]),
+                    int(msg["parent_xid"]),
+                    with_children=msg.get("with_children", False),
+                )
             elif action == "rename_project":
                 self._rename_project(msg["project_id"], msg["name"])
             elif action == "refresh_thumb":
@@ -415,6 +421,19 @@ class JSBridge:
     def _activate_window(self, xid: int) -> None:
         self._activity.mark_click(xid)
         self._hide_live_preview()
+        record = self._reg.get(int(xid))
+        if record is not None:
+            log.info(
+                "activate request xid=%s title=%r app=%r class=%r project=%s parent=%s",
+                record.xid,
+                record.title,
+                record.app_name,
+                record.wm_class,
+                self._tree.get_project_id(record),
+                record.parent_xid,
+            )
+        else:
+            log.info("activate request xid=%s record=missing", xid)
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("Wnck", "3.0")
@@ -423,6 +442,12 @@ class JSBridge:
         screen.force_update()
         for w in screen.get_windows():
             if w.get_xid() == xid:
+                log.info(
+                    "activate matched xid=%s wnck_name=%r app=%r",
+                    xid,
+                    w.get_name(),
+                    w.get_application().get_name() if w.get_application() else "",
+                )
                 if self._before_activate_cb is not None:
                     self._before_activate_cb()
                 ts = Gtk.get_current_event_time()
@@ -434,12 +459,28 @@ class JSBridge:
         log.warning("activate: window xid=%d not found", xid)
 
     def _move_node(self, xid: int, target_project_id: str,
-                   with_children: bool) -> None:
+                   with_children) -> None:
         record = self._reg.get(xid)
         if record is None:
             return
 
         self._tree.move_node(xid, target_project_id, with_children=with_children)
+        self._reg.save()
+        self.push_graph()
+
+    def _set_parent(self, xid: int, parent_xid: int, with_children) -> None:
+        record = self._reg.get(xid)
+        parent = self._reg.get(parent_xid)
+        if record is None or parent is None:
+            return
+        log.info(
+            "set parent: child=%s title=%r parent=%s title=%r",
+            record.xid,
+            record.title,
+            parent.xid,
+            parent.title,
+        )
+        self._tree.set_parent(xid, parent_xid, with_children=with_children)
         self._reg.save()
         self.push_graph()
 

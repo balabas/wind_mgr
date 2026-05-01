@@ -85,6 +85,7 @@
   let _recentDetach = {};
   let _dragOriginProject = null;
   let _dragTargetProject = null;
+  let _dragTargetParent = null;
   let _settleAfterMoveUntil = 0;
   let _lastMiddleClickAt = 0;
   let _panRestoreTimer = null;
@@ -144,6 +145,9 @@
     fitMarginBottom: 140,
     maxZoom: 6,
     groupLabelGap: 18,
+    hierarchyGap: 170,
+    hierarchyStrength: 0.45,
+    hierarchySiblingSpread: 190,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -708,11 +712,17 @@
     const sx = d.source.x || 0, sy = d.source.y || 0;
     const tx = d.target.x || 0, ty = d.target.y || 0;
     const ss = cardSize(d.source), ts = cardSize(d.target);
+    if (d.source.project_id === d.target.project_id) {
+      const x1 = sx;
+      const y1 = sy + ss.h / 2;
+      const x2 = tx;
+      const y2 = ty - ts.h / 2;
+      const curve = Math.max(60, Math.min(220, Math.abs(y2 - y1) * 0.55));
+      return `M${x1},${y1}C${x1},${y1 + curve} ${x2},${y2 - curve} ${x2},${y2}`;
+    }
     const [x1, y1] = rectEdgePoint(sx, sy, tx, ty, ss.w / 2, ss.h / 2);
     const [x2, y2] = rectEdgePoint(tx, ty, sx, sy, ts.w / 2, ts.h / 2);
-    // Three-point path so marker-mid places the arrowhead at the midpoint
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    return `M${x1},${y1}L${mx},${my}L${x2},${y2}`;
+    return `M${x1},${y1}L${x2},${y2}`;
   }
 
   function ticked() {
@@ -847,16 +857,32 @@
   function forceHierarchy(linkData) {
     const gap = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 120;
     const strength = LAYOUT.hierarchyStrength != null ? LAYOUT.hierarchyStrength : 0.2;
+    const siblingSpread = LAYOUT.hierarchySiblingSpread != null ? LAYOUT.hierarchySiblingSpread : 160;
     return function force(alpha) {
+      const childrenByParent = new Map();
       linkData.forEach(e => {
         const p = e.source, c = e.target;
         if (!p || !c) return;
+        if (p.project_id !== c.project_id) return;
+        if (!childrenByParent.has(p.xid)) childrenByParent.set(p.xid, []);
+        childrenByParent.get(p.xid).push(c);
         const dy = (c.y || 0) - (p.y || 0);
         if (dy < gap) {
-          const push = (gap - dy) * strength * alpha * 0.5;
+          const push = (gap - dy) * strength * alpha;
           c.vy += push;
-          p.vy -= push;
+          p.vy -= push * 0.35;
         }
+      });
+      childrenByParent.forEach((children, parentXid) => {
+        const parent = linkData.find(e => e.source && e.source.xid === parentXid)?.source;
+        if (!parent || children.length < 2) return;
+        children
+          .slice()
+          .sort((a, b) => String(a.xid).localeCompare(String(b.xid)))
+          .forEach((child, i, arr) => {
+            const targetX = (parent.x || 0) + (i - (arr.length - 1) / 2) * siblingSpread;
+            child.vx += (targetX - (child.x || 0)) * strength * alpha * 0.35;
+          });
       });
     };
   }
@@ -1045,8 +1071,9 @@
     _dragOriginProject = d.project_id;
     _dragMoved = false;
     _dragTargetProject = null;
+    _dragTargetParent = null;
     _dragDropHulls = buildDropHulls(d);
-    setDragFeedback(d, null);
+    setDragFeedback(d, null, null);
     d.fx = d.x; d.fy = d.y;
     const hullSummary = _dragDropHulls.map(h => `${h.pid}(rects=${h.rects.length},hull=${!!h.hull})`).join(" ");
     console.log(`[drag start] xid=${d.xid} project=${d.project_id} origin=${_dragOriginProject} hulls: ${hullSummary}`);
@@ -1058,8 +1085,9 @@
     if (!_dragMoved && moved >= 8) _dragMoved = true;
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
-    _dragTargetProject = findDropProject(e.x, e.y, d);
-    setDragFeedback(d, _dragTargetProject);
+    _dragTargetParent = findDropParent(e.x, e.y, d);
+    _dragTargetProject = _dragTargetParent ? _dragTargetParent.project_id : findDropProject(e.x, e.y, d);
+    setDragFeedback(d, _dragTargetProject, _dragTargetParent);
     renderNodesOnly();
     renderHulls();
   }
@@ -1084,10 +1112,12 @@
       _dragActive = false;
       _dragOriginProject = null;
       _dragTargetProject = null;
+      _dragTargetParent = null;
       flushQueuedGraphData();
       return;
     }
 
+    const parentTarget = _dragTargetParent;
     const target = _dragTargetProject;
     const ownProject = soloProjectId(d.xid, startedProject);
     let nextProject = target || ownProject;
@@ -1095,15 +1125,20 @@
       nextProject = ownProject;
       console.log("ignored stale reinsertion", d.xid, startedProject);
     }
-    console.log(`[drag end] xid=${d.xid} from=${startedProject} target=${target} next=${nextProject} own=${ownProject} changed=${nextProject !== d.project_id}`);
+    console.log(`[drag end] xid=${d.xid} from=${startedProject} target=${target} parent=${parentTarget ? parentTarget.xid : null} next=${nextProject} own=${ownProject} changed=${nextProject !== d.project_id}`);
     const projectChanged = nextProject !== d.project_id;
-    if (projectChanged) {
+    if (parentTarget) {
+      d.parent_xid = parentTarget.xid;
+      d.project_id = parentTarget.project_id;
+      _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
+      sendToBackend({ action: "set_parent", xid: d.xid, parent_xid: parentTarget.xid, with_children: "same_project" });
+    } else if (projectChanged) {
       if (nextProject === ownProject && startedProject !== ownProject) {
         _recentDetach[d.xid] = { from: startedProject, until: Date.now() + 6000 };
       }
       d.project_id = nextProject;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
-      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: false });
+      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: "same_project" });
     }
 
     clearDragFeedback();
@@ -1111,13 +1146,14 @@
     _dragActive = false;
     _dragOriginProject = null;
     _dragTargetProject = null;
+    _dragTargetParent = null;
     renderHulls();
-    if (projectChanged) {
+    if (projectChanged || parentTarget) {
       _queuedGraphData = null;
       _settleAfterMoveUntil = Date.now() + 2500;
     }
     else flushQueuedGraphData();
-    if (!keepFrozen && !_forceFrozen) restartLayout(projectChanged ? 0.65 : 0.08);
+    if (!keepFrozen && !_forceFrozen) restartLayout((projectChanged || parentTarget) ? 0.65 : 0.08);
   }
 
   function restartLayout(alpha) {
@@ -1161,6 +1197,40 @@
     return findNearestProject(x, y, dragged.project_id, LAYOUT.dropNearestDistance);
   }
 
+  function findDropParent(x, y, dragged) {
+    let best = null;
+    let bestArea = Infinity;
+    _data.nodes.forEach(n => {
+      if (!n.is_alive || n.xid === dragged.xid) return;
+      if (wouldCreateParentCycle(dragged.xid, n.xid)) return;
+      const size = cardSize(n);
+      const pad = LAYOUT.dropIntoPad;
+      const x0 = (n.x || 0) - size.w / 2 - pad;
+      const x1 = (n.x || 0) + size.w / 2 + pad;
+      const y0 = (n.y || 0) - size.h / 2 - pad;
+      const y1 = (n.y || 0) + size.h / 2 + pad;
+      if (x < x0 || x > x1 || y < y0 || y > y1) return;
+      const area = (x1 - x0) * (y1 - y0);
+      if (area < bestArea) {
+        best = n;
+        bestArea = area;
+      }
+    });
+    return best;
+  }
+
+  function wouldCreateParentCycle(childXid, candidateParentXid) {
+    let current = _nodeMap[candidateParentXid];
+    const seen = new Set();
+    while (current && current.parent_xid != null) {
+      if (current.xid === childXid) return true;
+      if (seen.has(current.xid)) return true;
+      seen.add(current.xid);
+      current = _nodeMap[current.parent_xid];
+    }
+    return current && current.xid === childXid;
+  }
+
   function findProjectContainingPoint(x, y, dragged) {
     const hulls = _dragDropHulls || buildDropHulls(dragged);
     for (const h of hulls) {
@@ -1196,14 +1266,16 @@
     });
   }
 
-  function setDragFeedback(d, targetProjectId) {
+  function setDragFeedback(d, targetProjectId, targetParent) {
     const node = d3.select(`[data-xid="${d.xid}"]`);
     node.classed("dragging", true)
-      .classed("drop-into", !!targetProjectId)
+      .classed("drop-into", !!targetProjectId || !!targetParent)
       .classed("drop-out", !targetProjectId);
 
     _g.select(".hulls-layer").selectAll(".hull-group")
       .classed("drop-target", h => !!targetProjectId && h.pid === targetProjectId);
+    d3.selectAll(".node-g")
+      .classed("drop-parent-target", n => !!targetParent && n.xid === targetParent.xid);
   }
 
   function clearDragFeedback() {
@@ -1213,6 +1285,8 @@
       .classed("drop-out", false);
     _g.select(".hulls-layer").selectAll(".hull-group")
       .classed("drop-target", false);
+    d3.selectAll(".node-g")
+      .classed("drop-parent-target", false);
   }
 
   function findNearestProject(x, y, currentPid, threshold) {

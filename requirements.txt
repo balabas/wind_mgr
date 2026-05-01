@@ -1,11 +1,14 @@
 # System packages (apt) — install once:
-#   sudo apt install -y python3-gi gir1.2-wnck-3.0 gir1.2-webkit2-4.1 \
-#                       gir1.2-ayatanaappindicator3-0.1 gir1.2-keybinder-3.0 \
-#                       ffmpeg x11-apps python3-gi-cairo
+#   sudo apt install -y \
+#       python3-gi python3-gi-cairo python3-cairo \
+#       gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 gir1.2-wnck-3.0 \
+#       gir1.2-webkit2-4.1 gir1.2-ayatanaappindicator3-0.1 \
+#       gir1.2-keybinder-3.0 \
+#       libxcomposite1 libxfixes3 libgl1 \
+#       ffmpeg x11-apps
 
-# Python packages — already available on Ubuntu 24.04 system Python:
-#   pillow       (python3-pil via apt, or: pip install pillow)
-#   No other pip deps required — all GTK/Wnck/WebKit via system GObject introspection
+# Python packages:
+pynput
 
 # Optional (for global hotkey fallback if keybinder3 not available):
-#   python3-xlib  (apt: python3-xlib)
+#   python3-xlib  (apt: python3-xlib, or: pip install python-xlib)
