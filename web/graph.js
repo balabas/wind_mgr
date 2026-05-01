@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0101";
+  const GRAPH_VERSION = "20260501-0108";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -13,11 +13,43 @@
     if (now - _perfLastReport < 10000) return;  // report every 10s
     const elapsed = ((now - _perfLastReport) / 1000).toFixed(1);
     const dom = domStats();
+    const mem = (performance.memory
+      ? ` jsHeap=${(performance.memory.usedJSHeapSize/1048576).toFixed(1)}MB/${(performance.memory.jsHeapSizeLimit/1048576).toFixed(0)}MB`
+      : "");
+    const simA = _simulation ? _simulation.alpha().toFixed(4) : "null";
     console.log(
-      `[perf] last ${elapsed}s: updateGraph×${_perfUpdateCount}  simRebuild×${_perfSimCount}  thumbUpdates×${_perfThumbCount}  dom=${dom.total} nodes=${dom.cards} hulls=${dom.hulls} links=${dom.links} clips=${dom.clips} imgs=${dom.images} hidden=${dom.hidden}`
+      `[perf] last ${elapsed}s: updateGraph×${_perfUpdateCount}  simRebuild×${_perfSimCount}  thumbUpdates×${_perfThumbCount}  dom=${dom.total} nodes=${dom.cards} hulls=${dom.hulls} links=${dom.links} clips=${dom.clips} imgs=${dom.images} hidden=${dom.hidden}  simAlpha=${simA}${mem}`
     );
     _perfUpdateCount = 0; _perfSimCount = 0; _perfThumbCount = 0;
     _perfLastReport = now;
+  }
+
+  // ── Pan frame-time probe ──────────────────────────────────────────────────
+  let _panFrameProbe = null;
+  let _panFrameTimes = [];
+  let _panFramePrev = 0;
+
+  function startPanFrameProbe() {
+    if (_panFrameProbe) return;
+    _panFrameTimes = [];
+    _panFramePrev = performance.now();
+    function tick(ts) {
+      if (!_panPerformanceActive) {
+        _panFrameProbe = null;
+        if (_panFrameTimes.length > 0) {
+          const avg = (_panFrameTimes.reduce((a, b) => a + b, 0) / _panFrameTimes.length).toFixed(1);
+          const max = Math.max(..._panFrameTimes).toFixed(1);
+          const slow = _panFrameTimes.filter(t => t > 20).length;
+          console.log(`[pan] frames=${_panFrameTimes.length} avgMs=${avg} maxMs=${max} slow(>20ms)=${slow} simAlpha=${_simulation ? _simulation.alpha().toFixed(4) : "null"}`);
+        }
+        return;
+      }
+      const dt = ts - _panFramePrev;
+      _panFramePrev = ts;
+      if (dt > 0 && dt < 500) _panFrameTimes.push(dt);
+      _panFrameProbe = requestAnimationFrame(tick);
+    }
+    _panFrameProbe = requestAnimationFrame(tick);
   }
 
   function domStats() {
@@ -217,7 +249,7 @@
       _panPerformanceActive = true;
       _svg.classed("is-panning", true);
       setBackendInteractionActive(true);
-      if (_simulation) _simulation.stop();
+      startPanFrameProbe();
       return;
     }
     _panRestoreTimer = setTimeout(() => {
@@ -229,9 +261,6 @@
         const items = _deferredThumbItems;
         _deferredThumbItems = [];
         updateThumbnails(items);
-      }
-      if (_simulation && _simulation.alpha() > _simulation.alphaMin()) {
-        _simulation.restart();
       }
       _panRestoreTimer = null;
     }, 180);
@@ -954,6 +983,8 @@
     _dragDropHulls = buildDropHulls(d);
     setDragFeedback(d, null);
     d.fx = d.x; d.fy = d.y;
+    const hullSummary = _dragDropHulls.map(h => `${h.pid}(rects=${h.rects.length},hull=${!!h.hull})`).join(" ");
+    console.log(`[drag start] xid=${d.xid} project=${d.project_id} origin=${_dragOriginProject} hulls: ${hullSummary}`);
   }
   function dragged(e, d) {
     if (eventWantsFreeze(e)) _dragFreeze = true;
@@ -999,7 +1030,7 @@
       nextProject = ownProject;
       console.log("ignored stale reinsertion", d.xid, startedProject);
     }
-    console.log("drag release", d.xid, "from", startedProject, "target", target, "next", nextProject);
+    console.log(`[drag end] xid=${d.xid} from=${startedProject} target=${target} next=${nextProject} own=${ownProject} changed=${nextProject !== d.project_id}`);
     const projectChanged = nextProject !== d.project_id;
     if (projectChanged) {
       if (nextProject === ownProject && startedProject !== ownProject) {
@@ -1050,7 +1081,7 @@
   }
 
   function soloProjectId(xid) {
-    return `${xid}:solo`;
+    return String(xid);
   }
 
   function findDropProject(x, y, dragged) {
@@ -1063,10 +1094,11 @@
   function findProjectContainingPoint(x, y, dragged) {
     const hulls = _dragDropHulls || buildDropHulls(dragged);
     for (const h of hulls) {
+      if (h.pid === _dragOriginProject) continue;
       if (h.rects && h.rects.some(r => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) {
         return h.pid;
       }
-      if (h.pid !== _dragOriginProject && h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
+      if (h.hull && d3.polygonContains(h.hull, [x, y])) return h.pid;
     }
     return null;
   }

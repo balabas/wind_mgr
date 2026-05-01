@@ -73,6 +73,12 @@ class MainWindow:
         self._win.set_position(Gtk.WindowPosition.CENTER)
 
         # WebView
+        # DOCUMENT_VIEWER cache model: keep only resources referenced by the
+        # current page. Prevents stale ?t=mtime thumbnail URLs from accumulating
+        # decoded bitmaps in the image cache indefinitely.
+        ctx = WebKit2.WebContext.get_default()
+        ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_VIEWER)
+
         settings = WebKit2.Settings()
         settings.set_enable_javascript(True)
         settings.set_allow_file_access_from_file_urls(True)
@@ -99,6 +105,9 @@ class MainWindow:
         self._webview.connect("load-changed", self._on_load_changed)
 
         self._win.add(self._webview)
+
+        # Periodically flush WebKit's memory cache to evict stale decoded images.
+        GLib.timeout_add_seconds(60, self._flush_webkit_cache)
 
         # Wire bridge to webview
         self._bridge.attach(self._webview)
@@ -165,6 +174,11 @@ class MainWindow:
             _HOTKEY: on_activate
         })
         self.hotkey_listener.start()
+
+    def _flush_webkit_cache(self) -> bool:
+        WebKit2.WebContext.get_default().clear_cache()
+        log.debug("WebKit memory cache cleared")
+        return True  # keep repeating
 
     def _show_hotkey_dialog(self) -> None:
         dialog = Gtk.Dialog(

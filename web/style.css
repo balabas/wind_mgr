@@ -88,46 +88,29 @@ svg#graph {
   fill: #00d4ff;
   opacity: 0;
   pointer-events: none;
+  will-change: opacity;
 }
-/* Active-window glow: filter only on the single active card, not all cards.
-   Animates stroke-width only — no filter in keyframes to keep GPU layer clean. */
+/* Active-window glow: static cyan stroke + overlay opacity animation only.
+   Stroke-width/stroke-opacity animation forces SVG repaint every frame — avoid. */
 .node-g.active-window .node-bg {
   stroke: #00d4ff;
   stroke-width: 4;
-  animation: active-window-flash 2.4s ease-in-out infinite;
 }
 .node-g.active-window .active-overlay {
   animation: active-overlay-flash 2.4s ease-in-out infinite;
 }
-.node-g.active-window-new .node-bg {
-  animation-name: active-window-flash-start;
-}
 .node-g.active-window-new .active-overlay {
-  animation-name: active-overlay-flash-start;
+  animation: active-overlay-flash-start 2.4s ease-in-out infinite;
 }
 .node-g.selected .node-bg {
   stroke: #f39c12;
   stroke-width: 3.5;
 }
-/* During pan/zoom: kill all animations so the GPU layer stays stable */
-svg#graph.is-panning .node-g.active-window .node-bg,
-svg#graph.is-panning .node-g.active-window-new .node-bg {
-  animation: none;
-  stroke: #00d4ff;
-  stroke-width: 4;
-}
+/* During pan/zoom: freeze overlay so compositing layer stays valid */
 svg#graph.is-panning .node-g.active-window .active-overlay,
 svg#graph.is-panning .node-g.active-window-new .active-overlay {
   animation: none;
   opacity: 0.15;
-}
-@keyframes active-window-flash {
-  0%, 100% { stroke: #00d4ff; stroke-opacity: 0.5; stroke-width: 3; }
-  50%       { stroke: #8ff3ff; stroke-opacity: 1;   stroke-width: 5; }
-}
-@keyframes active-window-flash-start {
-  0%, 100% { stroke: #8ff3ff; stroke-opacity: 1;   stroke-width: 5; }
-  50%       { stroke: #00d4ff; stroke-opacity: 0.5; stroke-width: 3; }
 }
 @keyframes active-overlay-flash {
   0%, 100% { opacity: 0.08; }

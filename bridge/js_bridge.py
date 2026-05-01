@@ -449,9 +449,21 @@ class JSBridge:
             self._bg_refresh_tag = GLib.timeout_add(
                 self._bg_refresh_ms, self._refresh_background_thumb_tick
             )
+        GLib.timeout_add(5000, self._main_loop_latency_probe)
+
+    def _main_loop_latency_probe(self) -> bool:
+        import time as _time
+        scheduled_at = _time.monotonic()
+        def _idle():
+            latency_ms = (_time.monotonic() - scheduled_at) * 1000
+            log.debug("main-loop idle latency: %.1fms", latency_ms)
+        GLib.idle_add(_idle)
+        return True
 
     def _refresh_active_thumb_tick(self) -> bool:
-        if not self._ui_visible or self._interaction_active:
+        # Don't poll while UI is visible — user is looking at the switcher,
+        # and the constant pixbuf grabs saturate the GTK main loop.
+        if self._ui_visible or self._interaction_active:
             return True
         xid = self._active_window_xid(allow_fallback=False)
         if xid is not None:

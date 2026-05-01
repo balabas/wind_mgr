@@ -124,7 +124,11 @@ class ScreenshotCapture:
         pixbuf_holder: list = [None]
         done = threading.Event()
 
+        queued_at = time.monotonic()
+
         def _on_main():
+            wait_ms = (time.monotonic() - queued_at) * 1000
+            t0 = time.monotonic()
             try:
                 display = self._get_display()
                 Gdk.error_trap_push()
@@ -140,6 +144,11 @@ class ScreenshotCapture:
             except Exception:
                 log.debug("GDK capture failed xid=%d", xid, exc_info=True)
             finally:
+                grab_ms = (time.monotonic() - t0) * 1000
+                log.debug("pixbuf grab xid=%d: queued_wait=%.0fms grab=%.0fms size=%s",
+                          xid, wait_ms, grab_ms,
+                          f"{pixbuf_holder[0].get_width()}x{pixbuf_holder[0].get_height()}"
+                          if pixbuf_holder[0] else "none")
                 done.set()
 
         GLib.idle_add(_on_main)
@@ -150,10 +159,13 @@ class ScreenshotCapture:
             return False
         # Scale and encode off the main thread — these are the slow steps
         try:
+            t1 = time.monotonic()
             scaled_w, scaled_h = _fit_size(pb.get_width(), pb.get_height(),
                                            self._thumb_w, self._thumb_h)
             scaled = pb.scale_simple(scaled_w, scaled_h, GdkPixbuf.InterpType.BILINEAR)
             scaled.savev(str(self.thumb_path(xid)), "png", [], [])
+            log.debug("scale+save xid=%d: %.0fms -> %dx%d",
+                      xid, (time.monotonic() - t1) * 1000, scaled_w, scaled_h)
             return True
         except Exception:
             log.debug("Scale/save failed xid=%d", xid, exc_info=True)
