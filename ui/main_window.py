@@ -114,7 +114,7 @@ class MainWindow:
 
         # Wire bridge to webview
         self._bridge.attach(self._webview)
-        self._bridge.set_before_activate_callback(self.hide)
+        self._bridge.set_before_activate_callback(self._hide_after_activation)
 
         # Tray
         self._build_tray()
@@ -358,6 +358,11 @@ class MainWindow:
             self._win.hide()
             self._bridge.set_ui_visible(False)
             self._visible = False
+
+    def _hide_after_activation(self) -> None:
+        if self._edge_zones is not None:
+            self._edge_zones.suppress(900)
+        self.hide()
 
     def toggle(self, edge_context: EdgeZoneContext | None = None) -> None:
         if self._win and self._win.get_visible():

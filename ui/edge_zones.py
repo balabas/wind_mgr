@@ -54,6 +54,7 @@ class EdgeZoneWatcher:
         self._last_zone: tuple[int, str] | None = None
         self._last_context: EdgeZoneContext | None = None
         self._last_fire_ms = 0
+        self._suppressed_until_ms = 0
 
     def start(self) -> None:
         if not self._config.enabled:
@@ -77,7 +78,21 @@ class EdgeZoneWatcher:
             GLib.source_remove(self._timer_id)
             self._timer_id = None
 
+    def suppress(self, duration_ms: int) -> None:
+        """Ignore edge actions for a short period after programmatic hides."""
+        self._suppressed_until_ms = max(
+            self._suppressed_until_ms,
+            GLib.get_monotonic_time() // 1000 + max(0, duration_ms),
+        )
+        self._last_zone = None
+        self._last_context = None
+
     def _poll(self) -> bool:
+        now_ms = GLib.get_monotonic_time() // 1000
+        if now_ms < self._suppressed_until_ms:
+            self._last_zone = None
+            self._last_context = None
+            return True
         zone = self._current_zone()
         if zone is None or self._last_context is None:
             self._last_zone = None
@@ -85,7 +100,6 @@ class EdgeZoneWatcher:
             return True
         if zone == self._last_zone:
             return True
-        now_ms = GLib.get_monotonic_time() // 1000
         if now_ms - self._last_fire_ms < self._config.cooldown_ms:
             self._last_zone = zone
             return True

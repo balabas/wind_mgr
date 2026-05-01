@@ -106,6 +106,19 @@ svg#graph {
   stroke: #f39c12;
   stroke-width: 3.5;
 }
+.node-g.click-pending .node-bg {
+  stroke: #ffe66d;
+  stroke-width: 5;
+}
+.node-g.click-activate .node-bg {
+  stroke: #31d07f;
+  stroke-width: 5;
+}
+.node-g.click-discarded .node-bg {
+  stroke: #ff4d4f;
+  stroke-width: 5;
+  stroke-dasharray: 10 5;
+}
 /* During pan/zoom: freeze overlay so compositing layer stays valid */
 svg#graph.is-panning .node-g.active-window .active-overlay,
 svg#graph.is-panning .node-g.active-window-new .active-overlay {

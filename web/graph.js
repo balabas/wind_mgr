@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0152";
+  const GRAPH_VERSION = "20260502-0212";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -152,6 +152,8 @@
     hierarchyGap: 260,
     hierarchyStrength: 1.15,
     hierarchySiblingSpread: 260,
+    clickMoveTolerancePx: 8,
+    clickHoldTimeoutMs: 250,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -491,7 +493,21 @@
       .append("g")
         .attr("class", "node-g")
         .attr("data-xid", d => d.xid)
-        .on("click", (e, d) => { e.stopPropagation(); onNodeClick(d); })
+        .on("pointerdown", (e, d) => onNodePointerDown(e, d))
+        .on("pointerup", (e, d) => onNodePointerUp(e, d))
+        .on("pointercancel", (_e, d) => discardPendingClick(d, "pointer-cancel"))
+        .on("click", (e, d) => {
+          e.stopPropagation();
+          if (d._activatedFromPointer || d._activatedFromDragEnd) {
+            d._activatedFromPointer = false;
+            d._activatedFromDragEnd = false;
+            return;
+          }
+          if (d._discardClickUntil && Date.now() < d._discardClickUntil) {
+            return;
+          }
+          onNodeClick(d, "click");
+        })
         .on("mouseenter", (_e, d) => onNodeHover(d))
         .on("mouseleave", (_e, d) => onNodeLeave(d))
         .on("contextmenu", (e, d) => { e.preventDefault(); showContextMenu(e, d); })
@@ -1101,7 +1117,7 @@
     _queuedGraphData = null;
     _dragFreeze = eventWantsFreeze(e);
     if (_simulation) _simulation.stop();
-    _dragStart = { x: e.x, y: e.y, project_id: d.project_id };
+    _dragStart = { x: e.x, y: e.y, project_id: d.project_id, started_at: Date.now() };
     _dragOriginProject = d.project_id;
     _dragOriginHull = null;
     _dragMoved = false;
@@ -1121,7 +1137,7 @@
     if (eventWantsFreeze(e)) _dragFreeze = true;
     if (_simulation) _simulation.stop();
     const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
-    if (!_dragMoved && moved >= 8) _dragMoved = true;
+    if (!_dragMoved && moved >= LAYOUT.clickMoveTolerancePx) _dragMoved = true;
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
     _dragTargetProject = findDropProject(e.x, e.y, d);
@@ -1133,6 +1149,7 @@
   }
   function dragEnded(e, d) {
     const moved = _dragStart ? Math.hypot(e.x - _dragStart.x, e.y - _dragStart.y) : 0;
+    const heldMs = _dragStart ? Date.now() - (_dragStart.started_at || Date.now()) : 0;
     const restore = _dragStart;
     const startedProject = _dragStart ? _dragStart.project_id : d.project_id;
     _dragStart = null;
@@ -1143,7 +1160,7 @@
     if (!e.active) _simulation.alphaTarget(0);
     d.fx = null; d.fy = null;
     d.vx = 0; d.vy = 0;
-    if (moved < 8) {
+    if (moved < LAYOUT.clickMoveTolerancePx) {
       if (restore) { d.x = restore.x; d.y = restore.y; }
       stopLayoutMotion();
       renderNodesOnly();
@@ -1155,6 +1172,12 @@
       _dragTargetProject = null;
       _dragTargetParent = null;
       flushQueuedGraphData();
+      if (heldMs <= LAYOUT.clickHoldTimeoutMs) {
+        d._activatedFromDragEnd = true;
+        onNodeClick(d, `drag-click ${heldMs}ms ${moved.toFixed(1)}px`);
+      } else {
+        showClickDiscarded(d, `drag-hold ${heldMs}ms ${moved.toFixed(1)}px`);
+      }
       return;
     }
 
@@ -1343,11 +1366,83 @@
   }
 
   // ── Interactions ──────────────────────────────────────────────────────────
-  function onNodeClick(d) {
+  function onNodePointerDown(e, d) {
+    if (e.button !== 0) return;
+    d._pendingClick = {
+      x: e.clientX,
+      y: e.clientY,
+      started_at: Date.now(),
+      handled: false,
+    };
+    const g = d3.select(`[data-xid="${d.xid}"]`);
+    g.classed("click-pending", true)
+      .classed("click-discarded", false)
+      .classed("click-activate", false);
+    d._pendingClickTimer = setTimeout(() => {
+      if (!d._pendingClick || d._pendingClick.handled) return;
+      showClickDiscarded(d, `hold-timeout ${LAYOUT.clickHoldTimeoutMs}ms`);
+    }, LAYOUT.clickHoldTimeoutMs);
+  }
+
+  function onNodePointerUp(e, d) {
+    if (e.button !== 0 || !d._pendingClick) return;
+    const press = d._pendingClick;
+    const heldMs = Date.now() - press.started_at;
+    const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+    if (heldMs <= LAYOUT.clickHoldTimeoutMs && moved < LAYOUT.clickMoveTolerancePx) {
+      press.handled = true;
+      d._activatedFromPointer = true;
+      onNodeClick(d, `pointer-click ${heldMs}ms ${moved.toFixed(1)}px`);
+      clearPendingClick(d);
+      return;
+    }
+    showClickDiscarded(d, `pointer-discard ${heldMs}ms ${moved.toFixed(1)}px`);
+  }
+
+  function clearPendingClick(d) {
+    if (d._pendingClickTimer) {
+      clearTimeout(d._pendingClickTimer);
+      d._pendingClickTimer = null;
+    }
+    d._pendingClick = null;
+    d3.select(`[data-xid="${d.xid}"]`).classed("click-pending", false);
+  }
+
+  function discardPendingClick(d, reason) {
+    if (!d._pendingClick) return;
+    showClickDiscarded(d, reason);
+  }
+
+  function showClickDiscarded(d, reason) {
+    if (d._pendingClick) d._pendingClick.handled = true;
+    clearPendingClick(d);
+    d._discardClickUntil = Date.now() + 350;
+    console.log(`[click-discard] xid=${d.xid} reason=${reason}`);
+    flashNodeClass(d.xid, "click-discarded", 350);
+  }
+
+  function flashNodeClass(xid, className, ms) {
+    const g = d3.select(`[data-xid="${xid}"]`);
+    g.classed(className, false);
+    requestAnimationFrame(() => {
+      g.classed(className, true);
+      setTimeout(() => g.classed(className, false), ms);
+    });
+  }
+
+  function onNodeClick(d, source = "click") {
+    const now = Date.now();
+    if (d._lastActivateSentAt && now - d._lastActivateSentAt < 180) {
+      return;
+    }
+    d._lastActivateSentAt = now;
+    clearPendingClick(d);
+    flashNodeClass(d.xid, "click-activate", 260);
     stopLayoutMotion();
     _selectedXid = d.xid;
     d3.selectAll(".node-g").classed("selected", false);
     d3.select(`[data-xid="${d.xid}"]`).classed("selected", true);
+    console.log(`[activate-send] xid=${d.xid} source=${source}`);
     sendToBackend({ action: "activate", xid: d.xid });
   }
 
