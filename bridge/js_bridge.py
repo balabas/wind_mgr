@@ -40,6 +40,7 @@ class JSBridge:
         self._before_activate_cb: Callable[[], None] | None = None
         self._ui_visible = False
         self._last_graph_push_at = 0.0
+        self._last_active_xid: int | None = None
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
@@ -264,15 +265,25 @@ class JSBridge:
             screen.force_update()
             active = screen.get_active_window()
             if active is None:
-                return None
+                return self._valid_last_active_xid()
             xid = active.get_xid()
             record = self._reg.get(xid)
             if record is None or _is_self_record(record):
-                return None
+                return self._valid_last_active_xid()
+            self._last_active_xid = xid
             return xid
         except Exception:
             log.debug("Failed to read active window", exc_info=True)
+            return self._valid_last_active_xid()
+
+    def _valid_last_active_xid(self) -> int | None:
+        if self._last_active_xid is None:
             return None
+        record = self._reg.get(self._last_active_xid)
+        if record is None or not record.is_alive or _is_self_record(record):
+            self._last_active_xid = None
+            return None
+        return self._last_active_xid
 
     # ── Incoming messages from JS ─────────────────────────────────────────
 
@@ -415,6 +426,10 @@ class JSBridge:
         return False
 
     def _on_focus_changed(self, new_xid: int | None, old_xid: int | None, **_kw) -> None:
+        if new_xid is not None:
+            record = self._reg.get(new_xid)
+            if record is not None and record.is_alive and not _is_self_record(record):
+                self._last_active_xid = new_xid
         if self._ui_visible:
             self.push_active_window()
         if old_xid is None or old_xid == new_xid or new_xid is None:

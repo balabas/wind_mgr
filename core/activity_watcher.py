@@ -98,6 +98,10 @@ class ActivityWatcher:
 
     def _on_window_closed(self, screen: Wnck.Screen, window: Wnck.Window) -> None:
         xid = window.get_xid()
+        record = self._registry.get(xid)
+        if record is None or not record.is_alive or _is_self_record(record):
+            log.debug("Ignoring close for untracked window xid=%d", xid)
+            return
         self._registry.remove(xid)
         if self._active_xid == xid:
             self._active_xid = None
