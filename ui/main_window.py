@@ -250,8 +250,6 @@ class MainWindow:
         return False
 
     def _on_map(self, win: Gtk.Window, event) -> bool:
-        GLib.idle_add(self._maximize_visible_window)
-        GLib.timeout_add(100, self._maximize_visible_window)
         return False
 
     def show(self, edge_context: EdgeZoneContext | None = None) -> None:
@@ -266,10 +264,10 @@ class MainWindow:
                 and (self._last_edge_monitor is None or monitor_changed)
             )
             self._bridge.set_ui_visible(True)
-            self._win.show_all()
-            self._win.deiconify()  # Разворачивает, если было свернуто
             if edge_context is not None:
                 self._move_to_monitor(edge_context)
+            self._win.show_all()
+            self._win.deiconify()  # Разворачивает, если было свернуто
             self._win.maximize()
             self._win.present()
             log.info(
@@ -280,8 +278,7 @@ class MainWindow:
                 should_center_monitor,
                 self._visible,
             )
-            GLib.idle_add(self._maximize_visible_window, edge_context)
-            GLib.timeout_add(100, self._maximize_visible_window, edge_context)
+            GLib.timeout_add(120, self._ensure_maximized_visible_window, edge_context)
             if should_center_monitor:
                 GLib.timeout_add(350, self._center_visible_graph)
                 GLib.timeout_add(700, self._center_visible_graph)
@@ -308,19 +305,35 @@ class MainWindow:
         except Exception:
             log.warning("failed to move wind_mgr to touched monitor", exc_info=True)
 
-    def _maximize_visible_window(self, edge_context: EdgeZoneContext | None = None) -> bool:
+    def _ensure_maximized_visible_window(self, edge_context: EdgeZoneContext | None = None) -> bool:
         if self._win and self._visible:
-            if edge_context is not None:
+            if edge_context is not None and not self._window_is_on_monitor(edge_context):
+                log.info("window missed requested monitor; applying fallback move")
                 self._move_to_monitor(edge_context)
             self._win.maximize()
-            self._win.present()
             try:
                 x, y = self._win.get_position()
                 w, h = self._win.get_size()
-                log.info("maximized wind_mgr window=%sx%s+%s+%s", w, h, x, y)
+                log.info("ensure maximized wind_mgr window=%sx%s+%s+%s", w, h, x, y)
             except Exception:
                 log.debug("could not read wind_mgr window geometry", exc_info=True)
         return False
+
+    def _window_is_on_monitor(self, edge_context: EdgeZoneContext) -> bool:
+        if not self._win:
+            return False
+        try:
+            x, y = self._win.get_position()
+            w, h = self._win.get_size()
+            cx = x + w // 2
+            cy = y + h // 2
+            return (
+                edge_context.x <= cx < edge_context.x + edge_context.width
+                and edge_context.y <= cy < edge_context.y + edge_context.height
+            )
+        except Exception:
+            log.debug("could not verify wind_mgr monitor placement", exc_info=True)
+            return False
 
     def _center_visible_graph(self) -> bool:
         if not self._visible or self._webview is None:
