@@ -438,6 +438,7 @@ class JSBridge:
         gi.require_version("Gtk", "3.0")
         gi.require_version("Wnck", "3.0")
         from gi.repository import Gtk, Wnck
+        from ui.window_flash import flash_window_rect
         screen = Wnck.Screen.get_default()
         screen.force_update()
         for w in screen.get_windows():
@@ -455,6 +456,8 @@ class JSBridge:
                     # Wnck expects a 32-bit X timestamp, not Unix epoch time.
                     ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
                 w.activate(ts)
+                x, y, width, height = w.get_geometry()
+                GLib.timeout_add(140, flash_window_rect, x, y, width, height)
                 return
         log.warning("activate: window xid=%d not found", xid)
 
