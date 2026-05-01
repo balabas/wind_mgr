@@ -464,9 +464,39 @@ class JSBridge:
         if record is None:
             return
 
+        before_project_id = self._tree.get_project_id(record)
+        before_members = self._project_member_summary(before_project_id)
+        target_before = self._project_member_summary(target_project_id)
         self._tree.move_node(xid, target_project_id, with_children=with_children)
+        log.info(
+            "move_node xid=%s title=%r mode=%r from=%s to=%s before_from=%s before_to=%s after_from=%s after_to=%s",
+            xid,
+            record.title,
+            with_children,
+            before_project_id,
+            target_project_id,
+            before_members,
+            target_before,
+            self._project_member_summary(before_project_id),
+            self._project_member_summary(target_project_id),
+        )
         self._reg.save()
         self.push_graph()
+
+    def _project_member_summary(self, project_id: str) -> list[dict]:
+        members = []
+        for record in self._reg.all_alive():
+            if _is_self_record(record):
+                continue
+            if self._tree.get_project_id(record) != project_id:
+                continue
+            members.append({
+                "xid": record.xid,
+                "parent": record.parent_xid,
+                "explicit": record.project_id,
+                "title": (record.title or "")[:40],
+            })
+        return members
 
     def _set_parent(self, xid: int, parent_xid: int, with_children) -> None:
         record = self._reg.get(xid)

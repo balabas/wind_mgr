@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0113";
+  const GRAPH_VERSION = "20260501-1908";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -147,9 +147,9 @@
     fitMarginBottom: 140,
     maxZoom: 6,
     groupLabelGap: 18,
-    hierarchyGap: 170,
-    hierarchyStrength: 0.45,
-    hierarchySiblingSpread: 190,
+    hierarchyGap: 260,
+    hierarchyStrength: 1.15,
+    hierarchySiblingSpread: 260,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -744,7 +744,7 @@
   // ── Cluster hulls ─────────────────────────────────────────────────────────
   function renderHulls() {
     const projectGroups = {};
-    _data.nodes.filter(n => n.is_alive && !(_dragActive && n.project_id === _dragOriginProject)).forEach(n => {
+    _data.nodes.filter(n => n.is_alive).forEach(n => {
       (projectGroups[n.project_id] = projectGroups[n.project_id] || []).push(n);
     });
 
@@ -888,7 +888,7 @@
         if (dy < gap) {
           const push = (gap - dy) * strength * alpha;
           c.vy += push;
-          p.vy -= push * 0.35;
+          p.vy -= push * 0.12;
         }
       });
       childrenByParent.forEach((children, parentXid) => {
@@ -1154,14 +1154,12 @@
     const projectChanged = nextProject !== d.project_id;
     if (parentTarget) {
       d.parent_xid = parentTarget.xid;
-      d.project_id = parentTarget.project_id;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
       sendToBackend({ action: "set_parent", xid: d.xid, parent_xid: parentTarget.xid, with_children: "same_project" });
     } else if (projectChanged) {
       if (nextProject === ownProject && startedProject !== ownProject) {
         _recentDetach[d.xid] = { from: startedProject, until: Date.now() + 6000 };
       }
-      d.project_id = nextProject;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
       sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: "same_project" });
     }

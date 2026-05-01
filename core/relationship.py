@@ -181,9 +181,28 @@ class RelationshipTree:
     ) -> None:
         to_move = self._same_project_descendants(record, source_project_id)
         move_xids = {r.xid for r in to_move}
+        pinned_source_members: dict[int, str] = {}
         pinned_children: dict[int, str] = {}
+        log.info(
+            "same-project move subtree: root=%s title=%r source=%s target=%s move=%s",
+            record.xid,
+            record.title,
+            source_project_id,
+            target_project_id,
+            [self._record_summary(r) for r in to_move],
+        )
         if record.parent_xid not in move_xids:
             self._detach_from_parent_if_leaving_parent_project(record, target_project_id)
+
+        # Keep all non-moving cards that currently belong to the source hull in
+        # that hull. Without this, cards that inherited the source project
+        # implicitly can re-resolve into new solo hulls after the dragged
+        # parent/root moves away.
+        for source_member in self._reg.all_alive():
+            if source_member.xid in move_xids or source_member.project_id is not None:
+                continue
+            if self.get_project_id(source_member) == source_project_id:
+                pinned_source_members[source_member.xid] = source_project_id
 
         # Children outside the source project must not inherit the moved
         # parent's new project through the parent chain.
@@ -194,6 +213,23 @@ class RelationshipTree:
                 child = self._reg.get(child_xid)
                 if child is not None and child.project_id is None:
                     pinned_children[child.xid] = self.get_project_id(child)
+        if pinned_source_members:
+            log.info(
+                "same-project move pinned non-moving source members: root=%s pinned=%s",
+                record.xid,
+                pinned_source_members,
+            )
+        if pinned_children:
+            log.info(
+                "same-project move pinned non-moving children: root=%s pinned=%s",
+                record.xid,
+                pinned_children,
+            )
+
+        for member_xid, project_id in pinned_source_members.items():
+            member = self._reg.get(member_xid)
+            if member is not None and member.project_id is None:
+                member.project_id = project_id
 
         for moving in to_move:
             moving.project_id = target_project_id
@@ -202,6 +238,16 @@ class RelationshipTree:
             child = self._reg.get(child_xid)
             if child is not None and child.project_id is None:
                 child.project_id = project_id
+
+    def _record_summary(self, record: "WindowRecord") -> dict:
+        return {
+            "xid": record.xid,
+            "parent": record.parent_xid,
+            "explicit": record.project_id,
+            "effective": self.get_project_id(record),
+            "children": list(record.children_xids),
+            "title": (record.title or "")[:60],
+        }
 
     def _same_project_descendants(
         self,
