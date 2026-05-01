@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-1931";
+  const GRAPH_VERSION = "20260502-0152";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -93,6 +93,7 @@
   let _panPerformanceActive = false;
   let _deferredThumbItems = [];
   let _pendingZoomTransform = null;
+  let _pendingZoomUserInitiated = false;
   let _zoomFrame = null;
   let _currentZoomTransform = d3.zoomIdentity;
   let _viewCenterTarget = null;
@@ -197,7 +198,7 @@
       .scaleExtent([0.08, LAYOUT.maxZoom])
       .filter(zoomFilter)
       .on("start", () => setPanPerformanceMode(true))
-      .on("zoom", (e) => scheduleZoomTransform(e.transform));
+      .on("zoom", (e) => scheduleZoomTransform(e.transform, !!e.sourceEvent));
     _zoom.on("end", () => setPanPerformanceMode(false));
 
     _svg.call(_zoom);
@@ -278,16 +279,20 @@
     }, 180);
   }
 
-  function scheduleZoomTransform(transform) {
+  function scheduleZoomTransform(transform, userInitiated = false) {
     _pendingZoomTransform = transform;
+    _pendingZoomUserInitiated = _pendingZoomUserInitiated || userInitiated;
     if (_zoomFrame) return;
     _zoomFrame = requestAnimationFrame(() => {
       _zoomFrame = null;
       if (_pendingZoomTransform) {
         _currentZoomTransform = _pendingZoomTransform;
         applyZoomTransform(_pendingZoomTransform);
-        rememberViewCenterTarget();
+        if (_pendingZoomUserInitiated) {
+          rememberViewCenterTarget();
+        }
         _pendingZoomTransform = null;
+        _pendingZoomUserInitiated = false;
       }
     });
   }
@@ -475,6 +480,7 @@
       }
       n.vx = 0; n.vy = 0;
     });
+    ensureInitialViewCenterTarget(nodes);
 
     // ── Nodes DOM ───────────────────────────────────────────────────────
     const node = _g.select(".nodes-layer")
@@ -1419,10 +1425,10 @@
     });
 
     render(true);   // simulation starts from anchor positions
-    fitView();      // frame those positions immediately (no jump)
+    fitView(false); // frame those positions immediately; no startup transition race
   }
 
-  function fitView() {
+  function fitView(animate = true) {
     const nodes = _data.nodes.filter(n => n.is_alive);
     if (!nodes.length) return;
     const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
@@ -1435,8 +1441,33 @@
     const tx = (W - scale * (x0 + x1)) / 2;
     const ty = (H - scale * (y0 + y1)) / 2;
     _viewCenterTarget = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    const transform = d3.zoomIdentity.translate(tx, ty).scale(scale);
+    if (!animate) {
+      applyZoomImmediately(transform);
+      return;
+    }
     _svg.transition().duration(600)
-      .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+      .call(_zoom.transform, transform)
+      .on("end", () => {
+        _currentZoomTransform = transform;
+        applyZoomTransform(transform);
+      });
+  }
+
+  function ensureInitialViewCenterTarget(nodes) {
+    if (_viewCenterTarget || !nodes.length) return;
+    const xs = nodes.map(n => n.x).filter(Number.isFinite);
+    const ys = nodes.map(n => n.y).filter(Number.isFinite);
+    if (!xs.length || !ys.length) return;
+    _viewCenterTarget = {
+      x: (Math.min(...xs) + Math.max(...xs)) / 2,
+      y: (Math.min(...ys) + Math.max(...ys)) / 2,
+    };
+    console.log(
+      `[center-init] target=(${_viewCenterTarget.x.toFixed(1)},${_viewCenterTarget.y.toFixed(1)}) ` +
+      `bounds=(${Math.min(...xs).toFixed(1)},${Math.min(...ys).toFixed(1)})-(${Math.max(...xs).toFixed(1)},${Math.max(...ys).toFixed(1)}) ` +
+      `viewport=${window.innerWidth}x${window.innerHeight}`
+    );
   }
 
   function rememberViewCenterTarget() {
@@ -1446,6 +1477,11 @@
       x: (window.innerWidth / 2 - _currentZoomTransform.x) / k,
       y: (window.innerHeight / 2 - _currentZoomTransform.y) / k,
     };
+    console.log(
+      `[center-remember] target=(${_viewCenterTarget.x.toFixed(1)},${_viewCenterTarget.y.toFixed(1)}) ` +
+      `viewport=${window.innerWidth}x${window.innerHeight} ` +
+      `zoom=k${k.toFixed(4)} tx=${_currentZoomTransform.x.toFixed(1)} ty=${_currentZoomTransform.y.toFixed(1)}`
+    );
   }
 
   function centerRememberedView() {
@@ -1455,8 +1491,20 @@
     const k = (_currentZoomTransform && _currentZoomTransform.k) || 1;
     const tx = window.innerWidth / 2 - k * _viewCenterTarget.x;
     const ty = window.innerHeight / 2 - k * _viewCenterTarget.y;
-    _svg.transition().duration(220)
-      .call(_zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+    const transform = d3.zoomIdentity.translate(tx, ty).scale(k);
+    console.log(
+      `[center-apply] target=(${_viewCenterTarget.x.toFixed(1)},${_viewCenterTarget.y.toFixed(1)}) ` +
+      `viewport=${window.innerWidth}x${window.innerHeight} ` +
+      `zoom=k${k.toFixed(4)} tx=${tx.toFixed(1)} ty=${ty.toFixed(1)}`
+    );
+    applyZoomImmediately(transform);
+  }
+
+  function applyZoomImmediately(transform) {
+    _svg.interrupt();
+    _svg.call(_zoom.transform, transform);
+    _currentZoomTransform = transform;
+    applyZoomTransform(transform);
   }
 
   // ── Context menu ──────────────────────────────────────────────────────────

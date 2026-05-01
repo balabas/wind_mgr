@@ -61,14 +61,14 @@ class ActivityWatcher:
 
     def _register_existing(self, window: Wnck.Window) -> None:
         xid = window.get_xid()
-        if self._registry.get(xid) is None:
+        record = self._registry.get(xid)
+        if record is None:
             record = self._build_record(window, parent_xid=None)
             record.is_alive = True
             self._registry.add(record)
         else:
-            record = self._registry.get(xid)
-            if record:
-                self._sync_geometry(window, record)
+            self._sync_record(window, record)
+            record.is_alive = True
         window.connect("name-changed", self._on_name_changed)
         window.connect("geometry-changed", self._on_geometry_changed)
 
@@ -76,7 +76,17 @@ class ActivityWatcher:
         if not self._should_track(window):
             return
         xid = window.get_xid()
-        if self._registry.get(xid) is not None:
+        existing = self._registry.get(xid)
+        if existing is not None and existing.is_alive:
+            return
+        if existing is not None:
+            self._sync_record(window, existing)
+            existing.is_alive = True
+            window.connect("name-changed", self._on_name_changed)
+            window.connect("geometry-changed", self._on_geometry_changed)
+            bus.emit(EVT_WINDOW_OPENED, record=existing)
+            bus.emit(EVT_GRAPH_UPDATED)
+            log.debug("Window revived xid=%d title=%r", xid, existing.title)
             return
 
         # Wnck's previously-active window is unreliable during window-opened;
@@ -147,6 +157,19 @@ class ActivityWatcher:
             xid = window.get_xid()
             record = self._registry.get(xid)
             if record is None:
+                self._register_existing(window)
+                record = self._registry.get(xid)
+                if record is not None:
+                    bus.emit(EVT_WINDOW_OPENED, record=record)
+                    changed = True
+                    log.debug("Window discovered by poll xid=%d title=%r", xid, record.title)
+                continue
+            if not record.is_alive:
+                self._sync_record(window, record)
+                record.is_alive = True
+                bus.emit(EVT_WINDOW_OPENED, record=record)
+                changed = True
+                log.debug("Window revived by poll xid=%d title=%r", xid, record.title)
                 continue
             new_title = window.get_name() or ""
             if record.title != new_title:
@@ -175,6 +198,22 @@ class ActivityWatcher:
     @property
     def active_xid(self) -> int | None:
         return self._active_xid
+
+    def _sync_record(self, window: Wnck.Window, record: WindowRecord) -> bool:
+        app = window.get_application()
+        changed = False
+        updates = {
+            "title": window.get_name() or "",
+            "app_name": app.get_name() if app else "",
+            "pid": window.get_pid(),
+            "wm_class": window.get_class_instance_name() or "",
+            "wm_class_group": window.get_class_group_name() or "",
+        }
+        for key, value in updates.items():
+            if getattr(record, key) != value:
+                setattr(record, key, value)
+                changed = True
+        return self._sync_geometry(window, record) or changed
 
     def _sync_geometry(self, window: Wnck.Window, record: WindowRecord) -> bool:
         _x, _y, width, height = window.get_geometry()

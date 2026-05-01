@@ -261,6 +261,10 @@ class MainWindow:
                 and self._last_edge_monitor is not None
                 and edge_context.monitor_index != self._last_edge_monitor
             )
+            should_center_monitor = (
+                edge_context is not None
+                and (self._last_edge_monitor is None or monitor_changed)
+            )
             self._bridge.set_ui_visible(True)
             self._win.show_all()
             self._win.deiconify()  # Разворачивает, если было свернуто
@@ -268,9 +272,17 @@ class MainWindow:
                 self._move_to_monitor(edge_context)
             self._win.maximize()
             self._win.present()
+            log.info(
+                "show request edge_monitor=%s last_monitor=%s monitor_changed=%s center_monitor=%s visible=%s",
+                edge_context.monitor_index if edge_context is not None else None,
+                self._last_edge_monitor,
+                monitor_changed,
+                should_center_monitor,
+                self._visible,
+            )
             GLib.idle_add(self._maximize_visible_window, edge_context)
             GLib.timeout_add(100, self._maximize_visible_window, edge_context)
-            if monitor_changed:
+            if should_center_monitor:
                 GLib.timeout_add(350, self._center_visible_graph)
                 GLib.timeout_add(700, self._center_visible_graph)
             if edge_context is not None:
@@ -302,11 +314,24 @@ class MainWindow:
                 self._move_to_monitor(edge_context)
             self._win.maximize()
             self._win.present()
+            try:
+                x, y = self._win.get_position()
+                w, h = self._win.get_size()
+                log.info("maximized wind_mgr window=%sx%s+%s+%s", w, h, x, y)
+            except Exception:
+                log.debug("could not read wind_mgr window geometry", exc_info=True)
         return False
 
     def _center_visible_graph(self) -> bool:
         if not self._visible or self._webview is None:
             return False
+        if self._win:
+            try:
+                x, y = self._win.get_position()
+                w, h = self._win.get_size()
+                log.info("center graph request window=%sx%s+%s+%s", w, h, x, y)
+            except Exception:
+                log.debug("could not read wind_mgr window geometry before center", exc_info=True)
         js = (
             "try{"
             "if(window.windMgr) window.windMgr.centerRememberedView();"
