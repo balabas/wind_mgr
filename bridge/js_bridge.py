@@ -39,6 +39,7 @@ class JSBridge:
         self._last_thumb_urls: dict[int, tuple[str, str]] = {}
         self._before_activate_cb: Callable[[], None] | None = None
         self._ui_visible = False
+        self._interaction_active = False
         self._last_graph_push_at = 0.0
         self._last_active_xid: int | None = None
 
@@ -133,7 +134,7 @@ class JSBridge:
         if self._webview is None:
             return
         try:
-            active_xid = self._active_window_xid()
+            active_xid = self._active_window_xid(allow_fallback=True)
             js = (
                 "try{"
                 f"if(window.windMgr)window.windMgr.setActiveWindow({json.dumps(active_xid)});"
@@ -252,11 +253,11 @@ class JSBridge:
             if parent is not None and not _is_self_record(parent):
                 edges.append({"source": r.parent_xid, "target": r.xid, "type": "parent-child"})
 
-        active_xid = self._active_window_xid()
+        active_xid = self._active_window_xid(allow_fallback=True)
 
         return {"nodes": nodes, "edges": edges, "projects": projects, "active_xid": active_xid}
 
-    def _active_window_xid(self) -> int | None:
+    def _active_window_xid(self, *, allow_fallback: bool = False) -> int | None:
         try:
             import gi
             gi.require_version("Wnck", "3.0")
@@ -265,16 +266,16 @@ class JSBridge:
             screen.force_update()
             active = screen.get_active_window()
             if active is None:
-                return self._valid_last_active_xid()
+                return self._valid_last_active_xid() if allow_fallback else None
             xid = active.get_xid()
             record = self._reg.get(xid)
             if record is None or _is_self_record(record):
-                return self._valid_last_active_xid()
+                return self._valid_last_active_xid() if allow_fallback else None
             self._last_active_xid = xid
             return xid
         except Exception:
             log.debug("Failed to read active window", exc_info=True)
-            return self._valid_last_active_xid()
+            return self._valid_last_active_xid() if allow_fallback else None
 
     def _valid_last_active_xid(self) -> int | None:
         if self._last_active_xid is None:
@@ -304,7 +305,7 @@ class JSBridge:
             (log.error if lvl == "error" else log.warning if lvl == "warn" else log.debug)(
                 "JS %s: %s", lvl, txt)
             return False
-        if action != "refresh_active":
+        if action not in {"refresh_active", "set_interaction_active"}:
             log.debug("JS message: %s", msg)
         try:
             if action == "activate":
@@ -323,6 +324,8 @@ class JSBridge:
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
                 self._set_auto_refresh(msg.get("enabled", False))
+            elif action == "set_interaction_active":
+                self._interaction_active = bool(msg.get("active", False))
             elif action == "refresh_active":
                 if self._ui_visible:
                     self.push_active_window()
@@ -448,15 +451,17 @@ class JSBridge:
             )
 
     def _refresh_active_thumb_tick(self) -> bool:
-        if not self._ui_visible:
+        if not self._ui_visible or self._interaction_active:
             return True
-        xid = self._active_window_xid()
+        xid = self._active_window_xid(allow_fallback=False)
         if xid is not None:
             self._capture_one(xid)
         return True
 
     def _refresh_background_thumb_tick(self) -> bool:
-        active_xid = self._active_window_xid()
+        if self._interaction_active:
+            return True
+        active_xid = self._active_window_xid(allow_fallback=False)
         records = [
             r for r in self._reg.all_alive()
             if not _is_self_record(r) and r.xid != active_xid
@@ -470,6 +475,8 @@ class JSBridge:
         return True
 
     def _capture_one(self, xid: int) -> None:
+        if self._interaction_active:
+            return
         if xid in self._capture_inflight:
             return
         record = self._reg.get(xid)

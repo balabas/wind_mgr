@@ -111,66 +111,52 @@ class ScreenshotCapture:
 
     def _capture_worker(self, xid: int,
                         callback: Callable[[bool], None] | None) -> None:
-        success = self._window_exists(xid) and (self._try_gdk(xid) or self._try_ffmpeg(xid))
+        # _capture_one in js_bridge already guards is_alive; skip redundant Wnck check here
+        success = self._try_gdk(xid) or self._try_ffmpeg(xid)
         if callback is not None:
             GLib.idle_add(callback, success)
 
     def _try_gdk(self, xid: int) -> bool:
-        """Capture via GdkX11 composite. Must coordinate with GTK thread."""
-        result: list[bool] = []
+        """Capture via GdkX11 composite.
+        Only the raw X11 pixbuf grab runs on the GTK main thread (fast).
+        Scaling and PNG encoding run on the worker thread (CPU-heavy, off main loop).
+        """
+        pixbuf_holder: list = [None]
         done = threading.Event()
 
         def _on_main():
-            trapped = False
             try:
                 display = self._get_display()
                 Gdk.error_trap_push()
-                trapped = True
                 win = GdkX11.X11Window.foreign_new_for_display(display, xid)
-                if win is None:
-                    result.append(False)
-                    return
-                w = win.get_width()
-                h = win.get_height()
-                if w <= 0 or h <= 0:
-                    result.append(False)
-                    return
-                pb = Gdk.pixbuf_get_from_window(win, 0, 0, w, h)
-                if pb is None:
-                    result.append(False)
-                    return
-                scaled_w, scaled_h = _fit_size(w, h, self._thumb_w, self._thumb_h)
-                scaled = pb.scale_simple(
-                    scaled_w, scaled_h,
-                    GdkPixbuf.InterpType.BILINEAR,
-                )
-                scaled.savev(str(self.thumb_path(xid)), "png", [], [])
-                result.append(True)
+                if win is not None:
+                    w, h = win.get_width(), win.get_height()
+                    if w > 0 and h > 0:
+                        pixbuf_holder[0] = Gdk.pixbuf_get_from_window(win, 0, 0, w, h)
+                Gdk.flush()
+                if Gdk.error_trap_pop():
+                    pixbuf_holder[0] = None
+                    log.debug("GDK X error capturing xid=%d", xid)
             except Exception:
                 log.debug("GDK capture failed xid=%d", xid, exc_info=True)
-                result.append(False)
             finally:
-                if trapped:
-                    Gdk.flush()
-                    if Gdk.error_trap_pop():
-                        if result:
-                            result[-1] = False
-                        else:
-                            result.append(False)
-                        log.debug("GDK capture skipped stale xid=%d after X error", xid)
                 done.set()
 
         GLib.idle_add(_on_main)
         done.wait(timeout=3.0)
-        return bool(result and result[0])
 
-    def _window_exists(self, xid: int) -> bool:
+        pb = pixbuf_holder[0]
+        if pb is None:
+            return False
+        # Scale and encode off the main thread — these are the slow steps
         try:
-            screen = Wnck.Screen.get_default()
-            screen.force_update()
-            return any(w.get_xid() == xid for w in screen.get_windows())
+            scaled_w, scaled_h = _fit_size(pb.get_width(), pb.get_height(),
+                                           self._thumb_w, self._thumb_h)
+            scaled = pb.scale_simple(scaled_w, scaled_h, GdkPixbuf.InterpType.BILINEAR)
+            scaled.savev(str(self.thumb_path(xid)), "png", [], [])
+            return True
         except Exception:
-            log.debug("Failed to check window existence xid=%d", xid, exc_info=True)
+            log.debug("Scale/save failed xid=%d", xid, exc_info=True)
             return False
 
     def _try_ffmpeg(self, xid: int) -> bool:

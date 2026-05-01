@@ -2,10 +2,37 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0009";
+  const GRAPH_VERSION = "20260501-0020";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
+  // ── Perf counters ─────────────────────────────────────────────────────────
+  let _perfUpdateCount = 0, _perfSimCount = 0, _perfThumbCount = 0, _perfLastReport = Date.now();
+  function _perfReport() {
+    const now = Date.now();
+    if (now - _perfLastReport < 10000) return;  // report every 10s
+    const elapsed = ((now - _perfLastReport) / 1000).toFixed(1);
+    const dom = domStats();
+    console.log(
+      `[perf] last ${elapsed}s: updateGraph×${_perfUpdateCount}  simRebuild×${_perfSimCount}  thumbUpdates×${_perfThumbCount}  dom=${dom.total} nodes=${dom.cards} hulls=${dom.hulls} links=${dom.links} clips=${dom.clips} imgs=${dom.images} hidden=${dom.hidden}`
+    );
+    _perfUpdateCount = 0; _perfSimCount = 0; _perfThumbCount = 0;
+    _perfLastReport = now;
+  }
+
+  function domStats() {
+    if (!_svg) return { total: 0, cards: 0, hulls: 0, links: 0, clips: 0, images: 0, hidden: 0 };
+    const root = _svg.node();
+    return {
+      total: root.querySelectorAll("*").length,
+      cards: root.querySelectorAll(".node-g").length,
+      hulls: root.querySelectorAll(".hull-group").length,
+      links: root.querySelectorAll(".link,.link-hit").length,
+      clips: root.querySelectorAll("clipPath").length,
+      images: root.querySelectorAll("image").length,
+      hidden: root.querySelectorAll('[display="none"],[style*="display: none"]').length,
+    };
+  }
   let _simulation = null;
   let _svg = null, _g = null, _zoom = null;
   let _nodeMap = {};
@@ -28,6 +55,14 @@
   let _dragTargetProject = null;
   let _settleAfterMoveUntil = 0;
   let _lastMiddleClickAt = 0;
+  let _panRestoreTimer = null;
+  let _panPerformanceActive = false;
+  let _deferredThumbItems = [];
+  let _pendingZoomTransform = null;
+  let _zoomFrame = null;
+  let _currentZoomTransform = d3.zoomIdentity;
+  let _backendInteractionActive = false;
+  let _backendInteractionStopTimer = null;
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -97,6 +132,9 @@
 
   function _initInner() {
     _svg = d3.select("svg#graph");
+    // Keep the SVG tree single-rooted even if WebKit fires DOMContentLoaded
+    // again after an internal reload.
+    _svg.selectAll("*").remove();
 
     const defs = _svg.append("defs");
 
@@ -114,7 +152,9 @@
     _zoom = d3.zoom()
       .scaleExtent([0.08, LAYOUT.maxZoom])
       .filter(zoomFilter)
-      .on("zoom", (e) => _g.attr("transform", e.transform));
+      .on("start", () => setPanPerformanceMode(true))
+      .on("zoom", (e) => scheduleZoomTransform(e.transform));
+    _zoom.on("end", () => setPanPerformanceMode(false));
 
     _svg.call(_zoom);
     _svg.on("auxclick", (e) => {
@@ -128,7 +168,7 @@
         _lastMiddleClickAt = now;
       }
     });
-    _g = _svg.append("g");
+    _g = _svg.append("g").attr("class", "graph-world");
 
     _g.append("g").attr("class", "hulls-layer");
     _g.append("g").attr("class", "links-layer");
@@ -166,6 +206,73 @@
     return !e.button;
   }
 
+  function setPanPerformanceMode(active) {
+    if (!_svg) return;
+    if (_panRestoreTimer) {
+      clearTimeout(_panRestoreTimer);
+      _panRestoreTimer = null;
+    }
+    if (active) {
+      _panPerformanceActive = true;
+      setBackendInteractionActive(true);
+      return;
+    }
+    _panRestoreTimer = setTimeout(() => {
+      _panPerformanceActive = false;
+      applyZoomTransform(_currentZoomTransform);
+      setBackendInteractionActive(false);
+      if (_deferredThumbItems.length) {
+        const items = _deferredThumbItems;
+        _deferredThumbItems = [];
+        updateThumbnails(items);
+      }
+      _panRestoreTimer = null;
+    }, 180);
+  }
+
+  function scheduleZoomTransform(transform) {
+    _pendingZoomTransform = transform;
+    if (_zoomFrame) return;
+    _zoomFrame = requestAnimationFrame(() => {
+      _zoomFrame = null;
+      if (_pendingZoomTransform) {
+        _currentZoomTransform = _pendingZoomTransform;
+        applyZoomTransform(_pendingZoomTransform);
+        _pendingZoomTransform = null;
+      }
+    });
+  }
+
+  function applyZoomTransform(transform) {
+    if (!_g || !transform) return;
+    // Use CSS transform for viewport movement. It renders the same graphics as
+    // an SVG transform attribute, but avoids forcing WebKit to rebuild SVG
+    // image/filter layout on every pan frame.
+    _g
+      .style("transform", `matrix(${transform.k}, 0, 0, ${transform.k}, ${transform.x}, ${transform.y})`)
+      .style("transform-origin", "0 0")
+      .style("transform-box", "view-box");
+  }
+
+  function setBackendInteractionActive(active) {
+    if (_backendInteractionStopTimer) {
+      clearTimeout(_backendInteractionStopTimer);
+      _backendInteractionStopTimer = null;
+    }
+    if (active) {
+      if (_backendInteractionActive) return;
+      _backendInteractionActive = true;
+      sendToBackend({ action: "set_interaction_active", active: true });
+      return;
+    }
+    _backendInteractionStopTimer = setTimeout(() => {
+      if (!_backendInteractionActive) return;
+      _backendInteractionActive = false;
+      sendToBackend({ action: "set_interaction_active", active: false });
+      _backendInteractionStopTimer = null;
+    }, 900);
+  }
+
   // ── Public API ────────────────────────────────────────────────────────────
   window.windMgr = {
     updateGraph(data) {
@@ -187,6 +294,8 @@
       _projectMap = {};
       data.nodes.forEach(n => { _nodeMap[n.xid] = n; });
       data.projects.forEach(p => { _projectMap[p.id] = p; });
+      _perfUpdateCount++;
+      _perfReport();
       render(topologyChanged);
       updateStatus();
     },
@@ -339,6 +448,7 @@
       renderHulls();
       return;
     }
+    _perfSimCount++;
 
     const linkData = edges
       .map(e => ({ source: xidToNode[e.source], target: xidToNode[e.target] }))
@@ -457,6 +567,12 @@
   }
 
   function updateThumbnails(items) {
+    if (_panPerformanceActive) {
+      _deferredThumbItems = mergeThumbnailItems(_deferredThumbItems, items || []);
+      return;
+    }
+    _perfThumbCount += (items || []).length;
+    _perfReport();
     (items || []).forEach(item => {
       const node = _nodeMap[item.xid];
       if (!node) return;
@@ -471,6 +587,13 @@
         .filter(d => d.xid === item.xid);
       if (!g.empty()) renderCard(g, node);
     });
+  }
+
+  function mergeThumbnailItems(existing, incoming) {
+    const byXid = {};
+    existing.forEach(item => { byXid[item.xid] = item; });
+    incoming.forEach(item => { byXid[item.xid] = Object.assign(byXid[item.xid] || {}, item); });
+    return Object.values(byXid);
   }
 
   function cardSize(d) {
