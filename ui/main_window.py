@@ -22,6 +22,7 @@ _HOTKEY = str(cfg.get("capture", "hotkey"))
 print("Configured hotkey:", [_HOTKEY])
 
 from .hotkey import bind_hotkey
+from .edge_zones import EdgeZoneContext, EdgeZoneWatcher
 
 if TYPE_CHECKING:
     from bridge.js_bridge import JSBridge
@@ -57,6 +58,7 @@ class MainWindow:
         self._win: Gtk.Window | None = None
         self._webview: WebKit2.WebView | None = None
         self._indicator: AppIndicator3.Indicator | None = None
+        self._edge_zones: EdgeZoneWatcher | None = None
 
     def build(self) -> None:
         self._win = Gtk.Window()
@@ -118,6 +120,13 @@ class MainWindow:
 
         # Global hotkey
         self._bind_hotkey()
+
+        self._edge_zones = EdgeZoneWatcher(
+            on_toggle=self.toggle,
+            on_show=self.show,
+            on_hide=self.hide,
+        )
+        self._edge_zones.start()
 
     def _build_tray(self) -> None:
         try:
@@ -244,20 +253,42 @@ class MainWindow:
         GLib.timeout_add(100, self._maximize_visible_window)
         return False
 
-    def show(self) -> None:
+    def show(self, edge_context: EdgeZoneContext | None = None) -> None:
         if self._win:
             self._bridge.set_ui_visible(True)
             self._win.show_all()
             self._win.deiconify()  # Разворачивает, если было свернуто
+            if edge_context is not None:
+                self._move_to_monitor(edge_context)
             self._win.maximize()
             self._win.present()
-            GLib.idle_add(self._maximize_visible_window)
-            GLib.timeout_add(100, self._maximize_visible_window)
+            GLib.idle_add(self._maximize_visible_window, edge_context)
+            GLib.timeout_add(100, self._maximize_visible_window, edge_context)
             self._visible = True
             self._bridge.push_graph()
 
-    def _maximize_visible_window(self) -> bool:
+    def _move_to_monitor(self, edge_context: EdgeZoneContext) -> None:
+        if not self._win:
+            return
+        try:
+            self._win.unmaximize()
+            self._win.move(edge_context.x, edge_context.y)
+            self._win.resize(edge_context.width, edge_context.height)
+            log.info(
+                "show on monitor=%s geometry=%sx%s+%s+%s",
+                edge_context.monitor_index,
+                edge_context.width,
+                edge_context.height,
+                edge_context.x,
+                edge_context.y,
+            )
+        except Exception:
+            log.warning("failed to move wind_mgr to touched monitor", exc_info=True)
+
+    def _maximize_visible_window(self, edge_context: EdgeZoneContext | None = None) -> bool:
         if self._win and self._visible:
+            if edge_context is not None:
+                self._move_to_monitor(edge_context)
             self._win.maximize()
             self._win.present()
         return False
@@ -268,11 +299,11 @@ class MainWindow:
             self._bridge.set_ui_visible(False)
             self._visible = False
 
-    def toggle(self) -> None:
+    def toggle(self, edge_context: EdgeZoneContext | None = None) -> None:
         if self._win and self._win.get_visible():
             self.hide()
         else:
-            self.show()
+            self.show(edge_context)
 
     def run(self) -> None:
         self.show()
