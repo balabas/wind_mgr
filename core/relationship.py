@@ -116,6 +116,15 @@ class RelationshipTree:
         record = self._reg.get(xid)
         if record is None:
             return
+        previous_project_id = self.get_project_id(record)
+        if not with_children:
+            # If a parent card is moved alone, give its direct children an
+            # explicit old group. Otherwise they would inherit the parent's new
+            # project_id and the whole hull would follow the dragged card.
+            for child_xid in list(record.children_xids):
+                child = self._reg.get(child_xid)
+                if child is not None and child.project_id is None:
+                    child.project_id = previous_project_id
         record.project_id = target_project_id
         if with_children:
             for child_xid in list(record.children_xids):

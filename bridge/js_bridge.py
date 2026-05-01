@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import OrderedDict
 import configparser
 import json
 import logging
@@ -33,7 +34,10 @@ class JSBridge:
         self._active_refresh_tag: int | None = None
         self._bg_refresh_tag: int | None = None
         self._bg_refresh_idx: int = 0
-        self._capture_inflight: set[int] = set()
+        self._capture_running_xid: int | None = None
+        self._capture_queue: OrderedDict[int, str] = OrderedDict()
+        self._last_capture_at: dict[int, int] = {}
+        self._icon_captured_xids: set[int] = set()
         self._thumb_update_tag: int | None = None
         self._pending_thumb_xids: set[int] = set()
         self._last_thumb_urls: dict[int, tuple[str, str]] = {}
@@ -42,6 +46,7 @@ class JSBridge:
         self._interaction_active = False
         self._last_graph_push_at = 0.0
         self._last_active_xid: int | None = None
+        self._main_loop_latency_ms = 0.0
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
@@ -59,7 +64,6 @@ class JSBridge:
             1000,
             int(cfg.getfloat("capture", "background_refresh_interval", fallback=10.0) * 1000),
         )
-
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
 
@@ -319,7 +323,7 @@ class JSBridge:
             elif action == "rename_project":
                 self._rename_project(msg["project_id"], msg["name"])
             elif action == "refresh_thumb":
-                self._capture_one(int(msg["xid"]))
+                self._capture_one(int(msg["xid"]), reason="manual", force=True)
             elif action == "refresh_all_thumbs":
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
@@ -387,21 +391,11 @@ class JSBridge:
                 self.push_graph()
 
     def _refresh_all_thumbs(self) -> None:
-        records = self._reg.all_alive()
+        records = [r for r in self._reg.all_alive() if not _is_self_record(r)]
         if not records:
             return
-        remaining = [len(records)]
-
-        def _on_one_done(success: bool) -> None:
-            remaining[0] -= 1
-            log.debug("capture done success=%s remaining=%d", success, remaining[0])
-            if remaining[0] <= 0:
-                log.info("All thumbnails captured — updating thumbnails")
-                self._on_thumbnail_updated([r.xid for r in records])
-
         for r in records:
-            self._capture.capture_async(r.xid, callback=_on_one_done)
-            GLib.idle_add(self._capture.capture_icon, r.xid)
+            self._capture_one(r.xid, reason="manual", force=True)
 
     def _set_auto_refresh(self, enabled: bool) -> None:
         self._auto_refresh = enabled
@@ -438,7 +432,7 @@ class JSBridge:
         if old_xid is None or old_xid == new_xid or new_xid is None:
             return
         log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
-        self._capture_one(old_xid)
+        self._capture_one(old_xid, reason="focus-leave")
 
     def _start_thumbnail_refresh(self) -> None:
         if self._active_refresh_ms > 0 and self._active_refresh_tag is None:
@@ -456,23 +450,24 @@ class JSBridge:
         scheduled_at = _time.monotonic()
         def _idle():
             latency_ms = (_time.monotonic() - scheduled_at) * 1000
+            self._main_loop_latency_ms = latency_ms
             log.debug("main-loop idle latency: %.1fms", latency_ms)
+            return False
         GLib.idle_add(_idle)
         return True
 
     def _refresh_active_thumb_tick(self) -> bool:
-        # Don't poll while UI is visible — user is looking at the switcher,
-        # and the constant pixbuf grabs saturate the GTK main loop.
-        if self._ui_visible or self._interaction_active:
+        # Active-card blinking is frontend-only. Screenshot refresh remains
+        # independent from graph interaction; the queue only prevents parallel
+        # captures and gives rarer updates priority.
+        if self._ui_visible:
             return True
         xid = self._active_window_xid(allow_fallback=False)
         if xid is not None:
-            self._capture_one(xid)
+            self._capture_one(xid, reason="active")
         return True
 
     def _refresh_background_thumb_tick(self) -> bool:
-        if self._interaction_active:
-            return True
         active_xid = self._active_window_xid(allow_fallback=False)
         records = [
             r for r in self._reg.all_alive()
@@ -483,26 +478,73 @@ class JSBridge:
         self._bg_refresh_idx %= len(records)
         record = records[self._bg_refresh_idx]
         self._bg_refresh_idx = (self._bg_refresh_idx + 1) % len(records)
-        self._capture_one(record.xid)
+        self._capture_one(record.xid, reason="background")
         return True
 
-    def _capture_one(self, xid: int) -> None:
-        if self._interaction_active:
-            return
-        if xid in self._capture_inflight:
+    def _capture_one(self, xid: int, *, reason: str = "background", force: bool = False) -> None:
+        if not force and reason == "active" and not self._active_capture_due(xid):
             return
         record = self._reg.get(xid)
         if record is None or not record.is_alive or _is_self_record(record):
             return
-        self._capture_inflight.add(xid)
+        self._queue_capture(record.xid, reason)
+        self._start_next_capture()
+
+    def _active_capture_due(self, xid: int) -> bool:
+        now = GLib.get_monotonic_time() // 1000
+        interval_ms = self._active_refresh_ms or 0
+        last = self._last_capture_at.get(xid, 0)
+        return now - last >= interval_ms
+
+    def _queue_capture(self, xid: int, reason: str) -> None:
+        if reason == "active":
+            # Active refresh is frequent. Keep only the latest active-window
+            # request so it cannot starve rarer focus/background/manual updates.
+            for queued_xid, queued_reason in list(self._capture_queue.items()):
+                if queued_reason == "active":
+                    del self._capture_queue[queued_xid]
+            self._capture_queue[xid] = reason
+            return
+        self._capture_queue[xid] = reason
+        self._capture_queue.move_to_end(xid)
+
+    def _start_capture(self, xid: int, reason: str) -> None:
+        self._capture_running_xid = xid
+        self._last_capture_at[xid] = GLib.get_monotonic_time() // 1000
+        log.debug(
+            "capture start xid=%d reason=%s latency=%.0fms queue=%d",
+            xid, reason, self._main_loop_latency_ms, len(self._capture_queue),
+        )
 
         def _done(success: bool) -> None:
-            self._capture_inflight.discard(xid)
+            self._capture_running_xid = None
             if success:
                 self._on_thumbnail_updated([xid])
+            self._start_next_capture()
+            return False
 
         self._capture.capture_async(xid, callback=_done)
-        GLib.idle_add(self._capture.capture_icon, xid)
+        if xid not in self._icon_captured_xids and not self._capture.icon_path(xid).exists():
+            self._icon_captured_xids.add(xid)
+            GLib.idle_add(self._capture.capture_icon, xid)
+
+    def _start_next_capture(self) -> None:
+        if self._capture_running_xid is not None:
+            return
+        while self._capture_queue:
+            xid, reason = self._pop_next_queued_capture()
+            record = self._reg.get(xid)
+            if record is None or not record.is_alive or _is_self_record(record):
+                continue
+            self._start_capture(xid, reason)
+            return
+
+    def _pop_next_queued_capture(self) -> tuple[int, str]:
+        for xid, reason in list(self._capture_queue.items()):
+            if reason != "active":
+                del self._capture_queue[xid]
+                return xid, reason
+        return self._capture_queue.popitem(last=False)
 
 
 def _is_self_record(record) -> bool:

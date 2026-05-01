@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0108";
+  const GRAPH_VERSION = "20260501-0109";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -1038,7 +1038,7 @@
       }
       d.project_id = nextProject;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
-      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: true });
+      sendToBackend({ action: "move_node", xid: d.xid, project_id: nextProject, with_children: false });
     }
 
     clearDragFeedback();
@@ -1081,7 +1081,7 @@
   }
 
   function soloProjectId(xid) {
-    return String(xid);
+    return `${xid}:solo`;
   }
 
   function findDropProject(x, y, dragged) {
