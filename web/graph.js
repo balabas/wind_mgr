@@ -110,6 +110,7 @@
     hullShape: "cards",
     hullCornerRadius: 18,
     dropIntoPad: 30,
+    dropParentInnerPad: -18,
     dropHullPad: 30,
     dropNearestDistance: 0,
     geometrySpacing: 620,
@@ -1085,8 +1086,9 @@
     if (!_dragMoved && moved >= 8) _dragMoved = true;
     d.fx = e.x; d.fy = e.y;
     d.x = e.x; d.y = e.y;
-    _dragTargetParent = findDropParent(e.x, e.y, d);
-    _dragTargetProject = _dragTargetParent ? _dragTargetParent.project_id : findDropProject(e.x, e.y, d);
+    _dragTargetProject = findDropProject(e.x, e.y, d);
+    _dragTargetParent = findDropParent(e.x, e.y, d, _dragTargetProject);
+    if (_dragTargetParent) _dragTargetProject = _dragTargetParent.project_id;
     setDragFeedback(d, _dragTargetProject, _dragTargetParent);
     renderNodesOnly();
     renderHulls();
@@ -1197,14 +1199,15 @@
     return findNearestProject(x, y, dragged.project_id, LAYOUT.dropNearestDistance);
   }
 
-  function findDropParent(x, y, dragged) {
+  function findDropParent(x, y, dragged, targetProjectId) {
     let best = null;
     let bestArea = Infinity;
     _data.nodes.forEach(n => {
       if (!n.is_alive || n.xid === dragged.xid) return;
+      if (!targetProjectId || n.project_id !== targetProjectId) return;
       if (wouldCreateParentCycle(dragged.xid, n.xid)) return;
       const size = cardSize(n);
-      const pad = LAYOUT.dropIntoPad;
+      const pad = LAYOUT.dropParentInnerPad != null ? LAYOUT.dropParentInnerPad : -18;
       const x0 = (n.x || 0) - size.w / 2 - pad;
       const x1 = (n.x || 0) + size.w / 2 + pad;
       const y0 = (n.y || 0) - size.h / 2 - pad;
