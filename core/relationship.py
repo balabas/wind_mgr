@@ -87,7 +87,7 @@ class RelationshipTree:
             pid = self.get_project_id(record)
             if pid not in seen:
                 name = ""
-                if pid.endswith(":solo"):
+                if ":solo" in pid:
                     solo_xid_str = pid.split(":")[0]
                     r = self._reg.get(int(solo_xid_str)) if solo_xid_str.isdigit() else None
                     if r:

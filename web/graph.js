@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0109";
+  const GRAPH_VERSION = "20260501-0111";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -103,6 +103,7 @@
   const LAYOUT = {
     hullPad: 100,
     hullShape: "cards",
+    hullCornerRadius: 18,
     dropIntoPad: 30,
     dropHullPad: 30,
     dropNearestDistance: 0,
@@ -715,8 +716,8 @@
       });
       const hull = d3.polygonHull(pts);
       const path = LAYOUT.hullShape === "cards"
-        ? nodes.map(n => cardRectPath(n, LAYOUT.hullPad)).join("")
-        : (hull ? "M" + hull.join("L") + "Z" : "");
+        ? nodes.map(n => cardRectPath(n, LAYOUT.hullPad, LAYOUT.hullCornerRadius)).join("")
+        : roundedPolygonPath(hull, LAYOUT.hullCornerRadius);
       return { pid, proj, hull, path, nodes,
                cx: d3.mean(nodes, n => n.x),
                cy: d3.mean(nodes, n => n.y),
@@ -749,10 +750,45 @@
     labels.exit().remove();
   }
 
-  function cardRectPath(d, pad) {
+  function cardRectPath(d, pad, radius) {
     const x = d.x || 0, y = d.y || 0;
     const size = cardSize(d), hw = size.w / 2 + pad, hh = size.h / 2 + pad;
-    return `M${x - hw},${y - hh}H${x + hw}V${y + hh}H${x - hw}Z`;
+    return roundedPolygonPath([
+      [x - hw, y - hh],
+      [x + hw, y - hh],
+      [x + hw, y + hh],
+      [x - hw, y + hh],
+    ], radius);
+  }
+
+  function roundedPolygonPath(points, radius) {
+    if (!points || points.length < 3) return "";
+    const r = Math.max(0, Number(radius) || 0);
+    if (!r) return "M" + points.join("L") + "Z";
+    const parts = [];
+    for (let i = 0; i < points.length; i++) {
+      const prev = points[(i - 1 + points.length) % points.length];
+      const curr = points[i];
+      const next = points[(i + 1) % points.length];
+      const prevLen = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
+      const nextLen = Math.hypot(next[0] - curr[0], next[1] - curr[1]);
+      const corner = Math.min(r, prevLen / 2, nextLen / 2);
+      const p1 = pointToward(curr, prev, corner);
+      const p2 = pointToward(curr, next, corner);
+      if (i === 0) parts.push(`M${p1[0]},${p1[1]}`);
+      else parts.push(`L${p1[0]},${p1[1]}`);
+      parts.push(`Q${curr[0]},${curr[1]} ${p2[0]},${p2[1]}`);
+    }
+    return parts.join("") + "Z";
+  }
+
+  function pointToward(from, to, distance) {
+    const dx = to[0] - from[0], dy = to[1] - from[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return [
+      from[0] + dx / len * distance,
+      from[1] + dy / len * distance,
+    ];
   }
 
   // ── Force cluster ─────────────────────────────────────────────────────────
@@ -1024,7 +1060,7 @@
     }
 
     const target = _dragTargetProject;
-    const ownProject = soloProjectId(d.xid);
+    const ownProject = soloProjectId(d.xid, startedProject);
     let nextProject = target || ownProject;
     if (target === startedProject && isRecentDetach(d.xid, startedProject)) {
       nextProject = ownProject;
@@ -1080,8 +1116,13 @@
     return rec.from === projectId;
   }
 
-  function soloProjectId(xid) {
-    return `${xid}:solo`;
+  function soloProjectId(xid, currentProjectId) {
+    const base = `${xid}:solo`;
+    const memberCount = _data.nodes.filter(n => n.is_alive && n.project_id === base).length;
+    if (currentProjectId === base && memberCount > 1) {
+      return `${xid}:solo:${Date.now()}`;
+    }
+    return base;
   }
 
   function findDropProject(x, y, dragged) {
