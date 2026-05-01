@@ -84,6 +84,7 @@
   let _queuedGraphData = null;
   let _recentDetach = {};
   let _dragOriginProject = null;
+  let _dragOriginHull = null;
   let _dragTargetProject = null;
   let _dragTargetParent = null;
   let _settleAfterMoveUntil = 0;
@@ -743,26 +744,19 @@
   // ── Cluster hulls ─────────────────────────────────────────────────────────
   function renderHulls() {
     const projectGroups = {};
-    _data.nodes.filter(n => n.is_alive && n.fx == null).forEach(n => {
+    _data.nodes.filter(n => n.is_alive && !(_dragActive && n.project_id === _dragOriginProject)).forEach(n => {
       (projectGroups[n.project_id] = projectGroups[n.project_id] || []).push(n);
     });
 
-    const hullData = Object.entries(projectGroups).map(([pid, nodes]) => {
-      const proj = _projectMap[pid] || { id: pid, name: pid, color: "#888" };
-      const pts = nodes.flatMap(n => {
-        const x = n.x || 0, y = n.y || 0, pad = LAYOUT.hullPad;
-        const size = cardSize(n), hw = size.w / 2, hh = size.h / 2;
-        return [[x-hw-pad,y-hh-pad],[x+hw+pad,y-hh-pad],[x+hw+pad,y+hh+pad],[x-hw-pad,y+hh+pad]];
-      });
-      const hull = d3.polygonHull(pts);
-      const path = LAYOUT.hullShape === "cards"
-        ? nodes.map(n => cardRectPath(n, LAYOUT.hullPad, LAYOUT.hullCornerRadius)).join("")
-        : roundedPolygonPath(hull, LAYOUT.hullCornerRadius);
-      return { pid, proj, hull, path, nodes,
-               cx: d3.mean(nodes, n => n.x),
-               cy: d3.mean(nodes, n => n.y),
-               labelY: d3.min(pts, p => p[1]) - LAYOUT.groupLabelGap };
-    }).filter(d => d.path);
+    const hullData = Object.entries(projectGroups)
+      .map(([pid, nodes]) => buildVisualHullDatum(pid, nodes))
+      .filter(d => d.path);
+
+    if (_dragActive && _dragOriginHull) {
+      const idx = hullData.findIndex(h => h.pid === _dragOriginHull.pid);
+      if (idx >= 0) hullData[idx] = _dragOriginHull;
+      else hullData.push(_dragOriginHull);
+    }
 
     const hulls = _g.select(".hulls-layer")
       .selectAll(".hull-group").data(hullData, d => d.pid);
@@ -788,6 +782,29 @@
 
     hulls.exit().remove();
     labels.exit().remove();
+  }
+
+  function buildVisualHullDatum(pid, nodes) {
+    const proj = _projectMap[pid] || { id: pid, name: pid, color: "#888" };
+    const pts = nodes.flatMap(n => {
+      const x = n.x || 0, y = n.y || 0, pad = LAYOUT.hullPad;
+      const size = cardSize(n), hw = size.w / 2, hh = size.h / 2;
+      return [[x-hw-pad,y-hh-pad],[x+hw+pad,y-hh-pad],[x+hw+pad,y+hh+pad],[x-hw-pad,y+hh+pad]];
+    });
+    const hull = d3.polygonHull(pts);
+    const path = LAYOUT.hullShape === "cards"
+      ? nodes.map(n => cardRectPath(n, LAYOUT.hullPad, LAYOUT.hullCornerRadius)).join("")
+      : roundedPolygonPath(hull, LAYOUT.hullCornerRadius);
+    return {
+      pid,
+      proj,
+      hull,
+      path,
+      nodes,
+      cx: d3.mean(nodes, n => n.x),
+      cy: d3.mean(nodes, n => n.y),
+      labelY: d3.min(pts, p => p[1]) - LAYOUT.groupLabelGap,
+    };
   }
 
   function cardRectPath(d, pad, radius) {
@@ -1070,9 +1087,14 @@
     if (_simulation) _simulation.stop();
     _dragStart = { x: e.x, y: e.y, project_id: d.project_id };
     _dragOriginProject = d.project_id;
+    _dragOriginHull = null;
     _dragMoved = false;
     _dragTargetProject = null;
     _dragTargetParent = null;
+    _dragOriginHull = buildVisualHullDatum(
+      _dragOriginProject,
+      _data.nodes.filter(n => n.is_alive && n.project_id === _dragOriginProject)
+    );
     _dragDropHulls = buildDropHulls(d);
     setDragFeedback(d, null, null);
     d.fx = d.x; d.fy = d.y;
@@ -1113,6 +1135,7 @@
       _dragDropHulls = null;
       _dragActive = false;
       _dragOriginProject = null;
+      _dragOriginHull = null;
       _dragTargetProject = null;
       _dragTargetParent = null;
       flushQueuedGraphData();
@@ -1147,6 +1170,7 @@
     _dragDropHulls = null;
     _dragActive = false;
     _dragOriginProject = null;
+    _dragOriginHull = null;
     _dragTargetProject = null;
     _dragTargetParent = null;
     renderHulls();
@@ -1237,7 +1261,6 @@
   function findProjectContainingPoint(x, y, dragged) {
     const hulls = _dragDropHulls || buildDropHulls(dragged);
     for (const h of hulls) {
-      if (h.pid === _dragOriginProject) continue;
       if (h.rects && h.rects.some(r => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) {
         return h.pid;
       }
@@ -1249,7 +1272,7 @@
   function buildDropHulls(dragged) {
     return _data.projects.map(p => {
       const members = _data.nodes.filter(n =>
-        n.is_alive && n.project_id === p.id && n.xid !== dragged.xid);
+        n.is_alive && n.project_id === p.id);
       if (!members.length) return { pid: p.id, hull: null, rects: [] };
       const pad = LAYOUT.dropHullPad;
       const pts = members.flatMap(n => [
