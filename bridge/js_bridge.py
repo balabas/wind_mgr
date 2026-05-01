@@ -4,12 +4,13 @@ import configparser
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import gi
 gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, WebKit2
 
+from core.activity_stats import ActivityStats
 from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED
 from core.relationship import RelationshipTree
 
@@ -47,6 +48,18 @@ class JSBridge:
         self._last_graph_push_at = 0.0
         self._last_active_xid: int | None = None
         self._main_loop_latency_ms = 0.0
+        self._activity_priority_enabled = True
+        self._background_refresh_min_ms = 10000
+        self._live_preview: Any | None = None
+        self._live_preview_xid: int | None = None
+        self._live_preview_enabled = True
+        self._live_preview_fps = 20
+        self._live_preview_idle_fps = 3
+        self._last_live_preview_idle_capture_ms: dict[int, int] = {}
+        self._last_live_preview_log_ms = 0
+        self._hover_refresh_ms = 2000
+        self._hovered_xid: int | None = None
+        self._hover_refresh_tag: int | None = None
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
@@ -64,6 +77,29 @@ class JSBridge:
             1000,
             int(cfg.getfloat("capture", "background_refresh_interval", fallback=10.0) * 1000),
         )
+        self._activity_priority_enabled = cfg.getboolean(
+            "capture", "activity_priority_enabled", fallback=True
+        )
+        self._background_refresh_min_ms = max(
+            1000,
+            int(cfg.getfloat("capture", "background_refresh_min_interval", fallback=10.0) * 1000),
+        )
+        self._activity = ActivityStats(
+            half_life_seconds=cfg.getfloat("capture", "activity_half_life_seconds", fallback=900.0)
+        )
+        self._live_preview_enabled = cfg.getboolean("capture", "live_preview_enabled", fallback=True)
+        self._live_preview_fps = max(
+            1,
+            min(60, int(cfg.getfloat("capture", "live_preview_fps", fallback=20))),
+        )
+        self._live_preview_idle_fps = max(
+            1,
+            min(60, int(cfg.getfloat("capture", "live_preview_idle_fps", fallback=3))),
+        )
+        self._hover_refresh_ms = max(
+            250,
+            int(cfg.getfloat("capture", "hover_refresh_interval", fallback=0.5) * 1000),
+        )
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
 
@@ -74,6 +110,9 @@ class JSBridge:
         self._ui_visible = visible
         if not visible:
             self._pending_thumb_xids.clear()
+            self._hovered_xid = None
+            self._stop_hover_refresh_timer()
+            self._hide_live_preview()
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
@@ -309,7 +348,16 @@ class JSBridge:
             (log.error if lvl == "error" else log.warning if lvl == "warn" else log.debug)(
                 "JS %s: %s", lvl, txt)
             return False
-        if action not in {"refresh_active", "set_interaction_active"}:
+        if action not in {
+            "refresh_active",
+            "set_interaction_active",
+            "card_hover",
+            "card_hover_leave",
+            "live_preview_update",
+            "live_preview_bounds",
+            "live_preview_idle",
+            "live_preview_hide",
+        }:
             log.debug("JS message: %s", msg)
         try:
             if action == "activate":
@@ -330,6 +378,27 @@ class JSBridge:
                 self._set_auto_refresh(msg.get("enabled", False))
             elif action == "set_interaction_active":
                 self._interaction_active = bool(msg.get("active", False))
+            elif action == "card_click":
+                self._activity.mark_click(int(msg["xid"]))
+            elif action == "card_hover":
+                self._activity.mark_hover(int(msg["xid"]))
+                self._refresh_hover_thumb(int(msg["xid"]))
+                self._show_live_preview_from_msg(msg)
+            elif action == "card_hover_leave":
+                xid = int(msg["xid"])
+                if self._hovered_xid == xid:
+                    self._hovered_xid = None
+                    self._stop_hover_refresh_timer()
+            elif action == "live_preview_update":
+                self._refresh_hover_thumb(int(msg["xid"]))
+                self._show_live_preview_from_msg(msg)
+            elif action == "live_preview_bounds":
+                self._refresh_hover_thumb(int(msg["xid"]))
+                self._show_live_preview_from_msg(msg, active_rate=False)
+            elif action == "live_preview_idle":
+                self._idle_live_preview(int(msg["xid"]))
+            elif action == "live_preview_hide":
+                self._hide_live_preview()
             elif action == "refresh_active":
                 if self._ui_visible:
                     self.push_active_window()
@@ -342,6 +411,8 @@ class JSBridge:
         return False  # GLib.idle_add one-shot
 
     def _activate_window(self, xid: int) -> None:
+        self._activity.mark_click(xid)
+        self._hide_live_preview()
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("Wnck", "3.0")
@@ -380,6 +451,151 @@ class JSBridge:
         record.parent_xid = None
         self._reg.save()
         self.push_graph()
+
+    def _show_live_preview_from_msg(self, msg: dict, *, active_rate: bool = True) -> None:
+        if not self._live_preview_enabled or not self._ui_visible:
+            return
+        try:
+            xid = int(msg["xid"])
+            record = self._reg.get(xid)
+            if record is None or not record.is_alive or _is_self_record(record):
+                self._hide_live_preview()
+                return
+            x, y = self._live_preview_screen_bounds(msg)
+            width = int(float(msg.get("width", 1)))
+            height = int(float(msg.get("height", 1)))
+            if width <= 4 or height <= 4:
+                return
+            self._log_live_preview_bounds(xid, x, y, width, height, msg)
+            if self._live_preview is None or self._live_preview_xid != xid:
+                self._hide_live_preview()
+                from live_preview.xcomposite_gl_preview import LivePreview
+                fps = self._live_preview_fps if active_rate else self._live_preview_idle_fps
+                self._live_preview = LivePreview(xid, fps, overlay=True)
+                self._live_preview_xid = xid
+                self._live_preview.set_bounds(x, y, width, height)
+                self._live_preview.show_all()
+            else:
+                if active_rate:
+                    self._live_preview.set_fps(self._live_preview_fps)
+                self._live_preview.set_bounds(x, y, width, height)
+        except Exception:
+            log.exception("Failed to show live preview")
+            self._hide_live_preview()
+
+    def _refresh_hover_thumb(self, xid: int) -> None:
+        self._hovered_xid = xid
+        self._start_hover_refresh_timer()
+        record = self._reg.get(xid)
+        if record is None or not record.is_alive or _is_self_record(record):
+            if self._hovered_xid == xid:
+                self._hovered_xid = None
+                self._stop_hover_refresh_timer()
+            return
+        now_ms = GLib.get_monotonic_time() // 1000
+        if now_ms - self._last_capture_at.get(xid, 0) < self._hover_refresh_ms:
+            return
+        self._capture_one(xid, reason="hover", force=True)
+
+    def _start_hover_refresh_timer(self) -> None:
+        if self._hover_refresh_tag is not None:
+            return
+        self._hover_refresh_tag = GLib.timeout_add(self._hover_refresh_ms, self._hover_refresh_tick)
+
+    def _stop_hover_refresh_timer(self) -> None:
+        if self._hover_refresh_tag is None:
+            return
+        GLib.source_remove(self._hover_refresh_tag)
+        self._hover_refresh_tag = None
+
+    def _hover_refresh_tick(self) -> bool:
+        xid = self._hovered_xid
+        if xid is None:
+            self._hover_refresh_tag = None
+            return False
+        self._refresh_hover_thumb(xid)
+        return True
+
+    def _log_live_preview_bounds(
+        self, xid: int, x: int, y: int, width: int, height: int, msg: dict
+    ) -> None:
+        now_ms = GLib.get_monotonic_time() // 1000
+        if now_ms - self._last_live_preview_log_ms < 1000:
+            return
+        self._last_live_preview_log_ms = now_ms
+        log.debug(
+            "live_preview bounds xid=%s screen=%s,%s size=%sx%s viewport=%s,%s",
+            xid,
+            x,
+            y,
+            width,
+            height,
+            msg.get("viewport_x"),
+            msg.get("viewport_y"),
+        )
+
+    def _live_preview_screen_bounds(self, msg: dict) -> tuple[int, int]:
+        if "screen_x" in msg and "screen_y" in msg:
+            return (
+                int(float(msg.get("screen_x", 0))),
+                int(float(msg.get("screen_y", 0))),
+            )
+        viewport_x = int(float(msg.get("viewport_x", 0)))
+        viewport_y = int(float(msg.get("viewport_y", 0)))
+        origin_x, origin_y = self._webview_screen_origin()
+        return origin_x + viewport_x, origin_y + viewport_y
+
+    def _webview_screen_origin(self) -> tuple[int, int]:
+        if self._webview is None:
+            return 0, 0
+        window = self._webview.get_window()
+        if window is None:
+            return 0, 0
+        origin = window.get_origin()
+        if isinstance(origin, tuple) and len(origin) == 3:
+            ok, x, y = origin
+            if ok:
+                return int(x), int(y)
+            return 0, 0
+        if isinstance(origin, tuple) and len(origin) == 2:
+            x, y = origin
+            return int(x), int(y)
+        return 0, 0
+
+    def _idle_live_preview(self, xid: int) -> None:
+        if self._live_preview is None:
+            return
+        try:
+            self._live_preview.set_fps(self._live_preview_idle_fps)
+            self._capture_live_preview_idle_thumb(xid)
+        except Exception:
+            log.debug("Failed to idle live preview", exc_info=True)
+
+    def _capture_live_preview_idle_thumb(self, xid: int) -> None:
+        now_ms = GLib.get_monotonic_time() // 1000
+        last_ms = self._last_live_preview_idle_capture_ms.get(xid, 0)
+        if now_ms - last_ms < 1000:
+            return
+        self._last_live_preview_idle_capture_ms[xid] = now_ms
+        if (
+            self._live_preview is not None
+            and self._live_preview_xid == xid
+            and self._live_preview.snapshot_to_png(str(self._capture.thumb_path(xid)))
+        ):
+            self._on_thumbnail_updated([xid])
+            return
+        self._capture_one(xid, reason="live-preview-idle", force=True)
+
+    def _hide_live_preview(self) -> None:
+        if self._live_preview is None:
+            self._live_preview_xid = None
+            return
+        try:
+            self._live_preview.destroy()
+        except Exception:
+            log.debug("Failed to destroy live preview", exc_info=True)
+        self._live_preview = None
+        self._live_preview_xid = None
 
     def _rename_project(self, project_id: str, name: str) -> None:
         # Store custom name in registry as metadata on root record
@@ -423,6 +639,7 @@ class JSBridge:
         return False
 
     def _on_focus_changed(self, new_xid: int | None, old_xid: int | None, **_kw) -> None:
+        self._activity.mark_focus_change(new_xid, old_xid)
         if new_xid is not None:
             record = self._reg.get(new_xid)
             if record is not None and record.is_alive and not _is_self_record(record):
@@ -460,10 +677,8 @@ class JSBridge:
         # Active-card blinking is frontend-only. Screenshot refresh remains
         # independent from graph interaction; the queue only prevents parallel
         # captures and gives rarer updates priority.
-        if self._ui_visible:
-            return True
         xid = self._active_window_xid(allow_fallback=False)
-        if xid is not None:
+        if xid is not None and xid != self._hovered_xid:
             self._capture_one(xid, reason="active")
         return True
 
@@ -471,15 +686,37 @@ class JSBridge:
         active_xid = self._active_window_xid(allow_fallback=False)
         records = [
             r for r in self._reg.all_alive()
-            if not _is_self_record(r) and r.xid != active_xid
+            if not _is_self_record(r) and r.xid != active_xid and r.xid != self._hovered_xid
         ]
         if not records:
             return True
-        self._bg_refresh_idx %= len(records)
-        record = records[self._bg_refresh_idx]
-        self._bg_refresh_idx = (self._bg_refresh_idx + 1) % len(records)
+        record = self._pick_background_record(records, active_xid)
+        if record is None:
+            return True
         self._capture_one(record.xid, reason="background")
         return True
+
+    def _pick_background_record(self, records, active_xid: int | None):
+        now_ms = GLib.get_monotonic_time() // 1000
+        due = [
+            r for r in records
+            if now_ms - self._last_capture_at.get(r.xid, 0) >= self._background_refresh_min_ms
+        ]
+        if not due:
+            return None
+        if not self._activity_priority_enabled:
+            self._bg_refresh_idx %= len(due)
+            record = due[self._bg_refresh_idx]
+            self._bg_refresh_idx = (self._bg_refresh_idx + 1) % len(due)
+            return record
+        return max(
+            due,
+            key=lambda r: self._activity.score(
+                r.xid,
+                active_xid=active_xid,
+                last_capture_at_ms=self._last_capture_at.get(r.xid, 0),
+            ),
+        )
 
     def _capture_one(self, xid: int, *, reason: str = "background", force: bool = False) -> None:
         if not force and reason == "active" and not self._active_capture_due(xid):
@@ -497,6 +734,16 @@ class JSBridge:
         return now - last >= interval_ms
 
     def _queue_capture(self, xid: int, reason: str) -> None:
+        if reason == "hover":
+            # Hover is user-visible and should preempt automatic refresh work.
+            # Keep only one queued hover capture, and replace any stale lower
+            # priority request for the same card.
+            for queued_xid, queued_reason in list(self._capture_queue.items()):
+                if queued_reason == "hover" or queued_xid == xid:
+                    del self._capture_queue[queued_xid]
+            self._capture_queue[xid] = reason
+            self._capture_queue.move_to_end(xid, last=False)
+            return
         if reason == "active":
             # Active refresh is frequent. Keep only the latest active-window
             # request so it cannot starve rarer focus/background/manual updates.
@@ -540,10 +787,24 @@ class JSBridge:
             return
 
     def _pop_next_queued_capture(self) -> tuple[int, str]:
-        for xid, reason in list(self._capture_queue.items()):
-            if reason != "active":
-                del self._capture_queue[xid]
-                return xid, reason
+        priority = {
+            "manual": 0,
+            "hover": 1,
+            "focus-leave": 2,
+            "live-preview-idle": 3,
+            "background": 4,
+            "active": 5,
+        }
+        best: tuple[int, str] | None = None
+        best_score = 999
+        for xid, reason in self._capture_queue.items():
+            score = priority.get(reason, 3)
+            if score < best_score:
+                best = (xid, reason)
+                best_score = score
+        if best is not None:
+            del self._capture_queue[best[0]]
+            return best
         return self._capture_queue.popitem(last=False)
 
 

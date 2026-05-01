@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260501-0111";
+  const GRAPH_VERSION = "20260501-0113";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -95,6 +95,10 @@
   let _currentZoomTransform = d3.zoomIdentity;
   let _backendInteractionActive = false;
   let _backendInteractionStopTimer = null;
+  let _lastHoverSentAt = {};
+  let _hoveredNode = null;
+  let _livePreviewNode = null;
+  let _lastLivePreviewSentAt = 0;
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -289,6 +293,7 @@
       .style("transform", `matrix(${transform.k}, 0, 0, ${transform.k}, ${transform.x}, ${transform.y})`)
       .style("transform-origin", "0 0")
       .style("transform-box", "view-box");
+    sendLivePreviewBoundsThrottled();
   }
 
   function setBackendInteractionActive(active) {
@@ -380,16 +385,27 @@
   }
 
   function setActiveWindow(xid) {
-    if (_data.active_xid === xid) return;
+    if (_data.active_xid === xid) {
+      applyActiveWindowClasses();
+      return;
+    }
     _data.active_xid = xid;
-    d3.selectAll(".node-g")
-      .classed("active-window", d => d.xid === xid)
-      .classed("active-window-new", false);
+    if (_hoveredNode && _hoveredNode.xid === xid) _hoveredNode = null;
+    applyActiveWindowClasses();
     const active = d3.select(`[data-xid="${xid}"]`);
     if (!active.empty()) {
       active.classed("active-window-new", false);
       requestAnimationFrame(() => active.classed("active-window-new", true));
     }
+  }
+
+  function applyActiveWindowClasses() {
+    d3.selectAll(".node-g")
+      .classed("active-window", d => d.xid === _data.active_xid)
+      .classed("active-window-new", function (d) {
+        return d.xid === _data.active_xid
+          && d3.select(this).classed("active-window-new");
+      });
   }
 
   function graphSignature(data) {
@@ -454,6 +470,8 @@
         .attr("class", "node-g")
         .attr("data-xid", d => d.xid)
         .on("click", (e, d) => { e.stopPropagation(); onNodeClick(d); })
+        .on("mouseenter", (_e, d) => onNodeHover(d))
+        .on("mouseleave", (_e, d) => onNodeLeave(d))
         .on("contextmenu", (e, d) => { e.preventDefault(); showContextMenu(e, d); })
         .call(d3.drag()
           .filter(e => !e.button)
@@ -537,6 +555,7 @@
 
   function renderCard(g, d) {
     g.classed("active-window", d.xid === _data.active_xid)
+     .classed("active-window-new", d.xid === _data.active_xid && g.classed("active-window-new"))
      .classed("selected",      d.xid === _selectedXid);
 
     const size = cardSize(d);
@@ -698,6 +717,7 @@
   function renderNodesOnly() {
     _g.select(".nodes-layer").selectAll(".node-g")
       .attr("transform", d => `translate(${d.x || 0},${d.y || 0})`);
+    sendLivePreviewBoundsThrottled();
   }
 
   // ── Cluster hulls ─────────────────────────────────────────────────────────
@@ -1206,6 +1226,53 @@
     d3.selectAll(".node-g").classed("selected", false);
     d3.select(`[data-xid="${d.xid}"]`).classed("selected", true);
     sendToBackend({ action: "activate", xid: d.xid });
+  }
+
+  function onNodeHover(d) {
+    _hoveredNode = d;
+    _livePreviewNode = d;
+    applyActiveWindowClasses();
+    const now = Date.now();
+    const isStatsDue = now - (_lastHoverSentAt[d.xid] || 0) >= 2000;
+    if (isStatsDue) _lastHoverSentAt[d.xid] = now;
+    sendLivePreviewBounds(d, isStatsDue ? "card_hover" : "live_preview_update");
+  }
+
+  function onNodeLeave(d) {
+    if (_hoveredNode && _hoveredNode.xid === d.xid) _hoveredNode = null;
+    applyActiveWindowClasses();
+    sendToBackend({ action: "card_hover_leave", xid: d.xid });
+    sendToBackend({ action: "live_preview_idle", xid: d.xid });
+  }
+
+  function sendLivePreviewBoundsThrottled() {
+    if (!_livePreviewNode) return;
+    const now = Date.now();
+    if (now - _lastLivePreviewSentAt < 80) return;
+    const action = (_hoveredNode && _hoveredNode.xid === _livePreviewNode.xid)
+      ? "live_preview_update"
+      : "live_preview_bounds";
+    sendLivePreviewBounds(_livePreviewNode, action);
+  }
+
+  function sendLivePreviewBounds(d, action) {
+    const el = document.querySelector(`[data-xid="${d.xid}"]`);
+    if (!el) {
+      if (_livePreviewNode && _livePreviewNode.xid === d.xid) _livePreviewNode = null;
+      sendToBackend({ action: "live_preview_hide", xid: d.xid });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 4 || rect.height <= 4) return;
+    _lastLivePreviewSentAt = Date.now();
+    sendToBackend({
+      action,
+      xid: d.xid,
+      viewport_x: rect.left,
+      viewport_y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    });
   }
 
   function stopLayoutMotion() {
