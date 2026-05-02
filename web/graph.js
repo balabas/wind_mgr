@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0212";
+  const GRAPH_VERSION = "20260502-0218";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -154,6 +154,7 @@
     hierarchySiblingSpread: 260,
     clickMoveTolerancePx: 8,
     clickHoldTimeoutMs: 250,
+    zoomWheelSensitivity: 0.002,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -198,6 +199,7 @@
 
     _zoom = d3.zoom()
       .scaleExtent([0.08, LAYOUT.maxZoom])
+      .wheelDelta(zoomWheelDelta)
       .filter(zoomFilter)
       .on("start", () => setPanPerformanceMode(true))
       .on("zoom", (e) => scheduleZoomTransform(e.transform, !!e.sourceEvent));
@@ -252,6 +254,12 @@
     if (e.type === "mousedown") return e.button === 1;
     if (e.type === "dblclick") return false;
     return !e.button;
+  }
+
+  function zoomWheelDelta(e) {
+    const sensitivity = Number(LAYOUT.zoomWheelSensitivity) || 0.002;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1;
+    return -e.deltaY * unit * sensitivity;
   }
 
   function setPanPerformanceMode(active) {
