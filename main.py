@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """wind_mgr — window manager companion with graph UI."""
 from __future__ import annotations
+import argparse
+import configparser
 import logging
 import sys
+from pathlib import Path
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -27,9 +30,40 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("wind_mgr")
+CONFIG_PATH = Path(__file__).parent / "config.ini"
 
 
-def main() -> None:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="wind_mgr window graph")
+    parser.add_argument(
+        "--start-hidden",
+        action="store_true",
+        default=None,
+        help="override config and start without showing the main window",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        default=None,
+        help="override config and show the main window on startup",
+    )
+    return parser.parse_args(argv)
+
+
+def _read_start_hidden_config() -> bool:
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_PATH)
+    return cfg.getboolean("startup", "start_hidden", fallback=False)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    start_hidden = _read_start_hidden_config()
+    if args.start_hidden:
+        start_hidden = True
+    if args.show:
+        start_hidden = False
+
     # ── Core components ──────────────────────────────────────────────────
     registry = WindowRegistry()
     tree     = RelationshipTree(registry)
@@ -126,7 +160,7 @@ def main() -> None:
     # ── Run ──────────────────────────────────────────────────────────────
     log.info("Starting wind_mgr")
     try:
-        window.run()
+        window.run(start_hidden=start_hidden)
     except KeyboardInterrupt:
         pass
     finally:

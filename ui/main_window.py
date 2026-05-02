@@ -375,8 +375,13 @@ class MainWindow:
         else:
             self.show(edge_context)
 
-    def run(self) -> None:
-        self.show()
+    def run(self, *, start_hidden: bool = False) -> None:
+        if start_hidden:
+            self._bridge.set_ui_visible(False)
+            self._visible = False
+            log.info("wind_mgr started hidden")
+        else:
+            self.show()
         Gtk.main()
 
     def quit(self) -> None:

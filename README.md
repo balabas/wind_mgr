@@ -62,6 +62,10 @@ python3 main.py
 
 Main settings are in `config.ini`.
 
+Startup settings:
+
+- `start_hidden`: if `true`, starts tray/hotkey/edge zones without showing the main window. Use this for Ubuntu autostart.
+
 Important capture settings:
 
 - `active_refresh_interval`: seconds between active-window SVG thumbnail updates.
