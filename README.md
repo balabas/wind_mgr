@@ -8,10 +8,11 @@
 - Preserves active-window border/overlay, selection, hulls, links, labels, and drag feedback because thumbnails update inside SVG `<image>` elements.
 - Refreshes thumbnails by priority:
   - hovered card: `hover_refresh_interval`
+  - newly opened windows: delayed by `new_window_capture_delay`, then retried by `capture_retry_interval` if capture fails
   - active window: `active_refresh_interval`
   - inactive windows: `background_refresh_interval` and `background_refresh_min_interval`
 - Uses a single capture queue so thumbnail captures do not run in parallel.
-- Capture priority is: manual, hover, focus-leave, live-preview-idle, background, active.
+- Capture priority is: manual, hover, new-window, retry, focus-leave, live-preview-idle, background, active.
 - Supports moving cards between geometries. Drag move carries same-geometry descendants with the parent; children already separated into another geometry stay separated.
 - Optional native XComposite/OpenGL popup preview exists, but is disabled by default because it renders above SVG overlays.
 
@@ -67,6 +68,9 @@ Important capture settings:
 - `hover_refresh_interval`: seconds between hovered-card SVG thumbnail updates. Keep this lower than `active_refresh_interval` for a more responsive hover stream.
 - `background_refresh_interval`: how often one inactive window is considered for refresh.
 - `background_refresh_min_interval`: minimum age before the same inactive window can refresh again.
+- `new_window_capture_delay`: waits before first capture of a new window so apps can paint their first frame.
+- `capture_retry_interval`: faster retry interval for windows whose thumbnail capture failed.
+- `capture_retry_max_attempts`: retry limit for failed thumbnail captures; `0` means unlimited.
 - `activity_priority_enabled`: prioritizes recently used windows for background refresh.
 - `live_preview_enabled`: enables the native XComposite/OpenGL popup preview. Default is `false` to preserve SVG overlays.
 

@@ -13,7 +13,7 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, WebKit2
 
 from core.activity_stats import ActivityStats
-from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED
+from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED, EVT_WINDOW_CLOSED, EVT_WINDOW_OPENED
 from core.relationship import RelationshipTree
 
 if TYPE_CHECKING:
@@ -41,6 +41,9 @@ class JSBridge:
         self._capture_queue: OrderedDict[int, str] = OrderedDict()
         self._last_capture_at: dict[int, int] = {}
         self._last_capture_reason: dict[int, str] = {}
+        self._successful_thumb_xids: set[int] = set()
+        self._failed_capture_attempts: dict[int, int] = {}
+        self._retry_capture_tag: int | None = None
         self._icon_captured_xids: set[int] = set()
         self._thumb_update_tag: int | None = None
         self._pending_thumb_xids: set[int] = set()
@@ -53,6 +56,9 @@ class JSBridge:
         self._main_loop_latency_ms = 0.0
         self._activity_priority_enabled = True
         self._background_refresh_min_ms = 10000
+        self._capture_retry_ms = 1000
+        self._capture_retry_max_attempts = 12
+        self._new_window_capture_delay_ms = 1000
         self._live_preview: Any | None = None
         self._live_preview_xid: int | None = None
         self._live_preview_enabled = True
@@ -92,6 +98,18 @@ class JSBridge:
             1000,
             int(cfg.getfloat("capture", "background_refresh_min_interval", fallback=10.0) * 1000),
         )
+        self._capture_retry_ms = max(
+            250,
+            int(cfg.getfloat("capture", "capture_retry_interval", fallback=1.0) * 1000),
+        )
+        self._capture_retry_max_attempts = max(
+            0,
+            int(cfg.getint("capture", "capture_retry_max_attempts", fallback=12)),
+        )
+        self._new_window_capture_delay_ms = max(
+            0,
+            int(cfg.getfloat("capture", "new_window_capture_delay", fallback=1.0) * 1000),
+        )
         self._activity = ActivityStats(
             half_life_seconds=cfg.getfloat("capture", "activity_half_life_seconds", fallback=900.0)
         )
@@ -110,6 +128,8 @@ class JSBridge:
         )
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
+        bus.subscribe(EVT_WINDOW_OPENED, self._on_window_opened)
+        bus.subscribe(EVT_WINDOW_CLOSED, self._on_window_closed)
 
     def set_before_activate_callback(self, callback: Callable[[], None]) -> None:
         self._before_activate_cb = callback
@@ -1173,6 +1193,29 @@ class JSBridge:
         log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
         self._capture_one(old_xid, reason="focus-leave")
 
+    def _on_window_opened(self, record, **_kw) -> None:
+        if record is None or _is_self_record(record):
+            return
+        xid = int(record.xid)
+        self._failed_capture_attempts[xid] = 0
+        delay_ms = self._new_window_capture_delay_ms
+        log.debug("new window capture scheduled xid=%s delay=%sms title=%r", xid, delay_ms, record.title)
+        if delay_ms <= 0:
+            self._capture_one(xid, reason="new-window", force=True)
+        else:
+            GLib.timeout_add(delay_ms, self._capture_new_window_once, xid)
+
+    def _capture_new_window_once(self, xid: int) -> bool:
+        self._capture_one(xid, reason="new-window", force=True)
+        return False
+
+    def _on_window_closed(self, xid: int, **_kw) -> None:
+        self._capture_queue.pop(int(xid), None)
+        self._last_capture_at.pop(int(xid), None)
+        self._last_capture_reason.pop(int(xid), None)
+        self._successful_thumb_xids.discard(int(xid))
+        self._failed_capture_attempts.pop(int(xid), None)
+
     def _start_thumbnail_refresh(self) -> None:
         if self._active_refresh_ms > 0 and self._active_refresh_tag is None:
             self._active_refresh_tag = GLib.timeout_add(
@@ -1296,7 +1339,7 @@ class JSBridge:
         now_ms = GLib.get_monotonic_time() // 1000
         due = [
             r for r in records
-            if now_ms - self._last_capture_at.get(r.xid, 0) >= self._background_refresh_min_ms
+            if now_ms - self._last_capture_at.get(r.xid, 0) >= self._background_due_ms(r.xid)
         ]
         if not due:
             return None
@@ -1313,6 +1356,11 @@ class JSBridge:
                 last_capture_at_ms=self._last_capture_at.get(r.xid, 0),
             ),
         )
+
+    def _background_due_ms(self, xid: int) -> int:
+        if xid in self._successful_thumb_xids or self._capture.thumb_path(xid).exists():
+            return self._background_refresh_min_ms
+        return min(self._background_refresh_min_ms, self._capture_retry_ms)
 
     def _capture_one(self, xid: int, *, reason: str = "background", force: bool = False) -> None:
         if not self._ui_visible and reason in {"active", "hover", "live-preview-idle"}:
@@ -1365,7 +1413,11 @@ class JSBridge:
         def _done(success: bool) -> None:
             self._capture_running_xid = None
             if success:
+                self._successful_thumb_xids.add(xid)
+                self._failed_capture_attempts.pop(xid, None)
                 self._on_thumbnail_updated([xid])
+            else:
+                self._handle_capture_failed(xid, reason)
             self._start_next_capture()
             return False
 
@@ -1376,6 +1428,51 @@ class JSBridge:
                 self._capture.capture_icon(xid)
                 return False
             GLib.idle_add(_capture_icon_once)
+
+    def _handle_capture_failed(self, xid: int, reason: str) -> None:
+        attempts = self._failed_capture_attempts.get(xid, 0) + 1
+        if self._capture_retry_max_attempts and attempts > self._capture_retry_max_attempts:
+            self._failed_capture_attempts.pop(xid, None)
+            log.warning(
+                "capture failed xid=%s reason=%s attempts=%s; retry limit reached",
+                xid,
+                reason,
+                attempts - 1,
+            )
+            return
+        self._failed_capture_attempts[xid] = attempts
+        log.debug(
+            "capture failed xid=%s reason=%s attempts=%s; retry in %sms",
+            xid,
+            reason,
+            attempts,
+            self._capture_retry_ms,
+        )
+        self._ensure_retry_capture_timer()
+
+    def _ensure_retry_capture_timer(self) -> None:
+        if self._retry_capture_tag is not None:
+            return
+        self._retry_capture_tag = GLib.timeout_add(self._capture_retry_ms, self._retry_failed_capture_tick)
+
+    def _retry_failed_capture_tick(self) -> bool:
+        self._retry_capture_tag = None
+        if not self._failed_capture_attempts:
+            return False
+        now_ms = GLib.get_monotonic_time() // 1000
+        due_xids = [
+            xid for xid in self._failed_capture_attempts
+            if now_ms - self._last_capture_at.get(xid, 0) >= self._capture_retry_ms
+        ]
+        for xid in due_xids:
+            record = self._reg.get(xid)
+            if record is None or not record.is_alive or _is_self_record(record):
+                self._failed_capture_attempts.pop(xid, None)
+                continue
+            self._capture_one(xid, reason="retry", force=True)
+        if self._failed_capture_attempts:
+            self._ensure_retry_capture_timer()
+        return False
 
     def _start_next_capture(self) -> None:
         if self._capture_running_xid is not None:
@@ -1392,10 +1489,12 @@ class JSBridge:
         priority = {
             "manual": 0,
             "hover": 1,
-            "focus-leave": 2,
-            "live-preview-idle": 3,
-            "background": 4,
-            "active": 5,
+            "new-window": 2,
+            "retry": 3,
+            "focus-leave": 4,
+            "live-preview-idle": 5,
+            "background": 6,
+            "active": 7,
         }
         best: tuple[int, str] | None = None
         best_score = 999
