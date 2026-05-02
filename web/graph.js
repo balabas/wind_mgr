@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0321";
+  const GRAPH_VERSION = "20260502-0331";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -545,6 +545,7 @@
     // Non-topology updates (thumbnails, titles): skip simulation rebuild to avoid memory/CPU leak
     if (!topologyChanged) {
       renderNodesOnly();
+      renderLinksOnly();
       renderHulls();
       return;
     }
@@ -768,11 +769,15 @@
   }
 
   function ticked() {
-    _g.select(".links-layer").selectAll(".link").attr("d", _linkPath);
-    _g.select(".links-layer").selectAll(".link-hit").attr("d", _linkPath);
+    renderLinksOnly();
 
     renderNodesOnly();
     renderHulls();
+  }
+
+  function renderLinksOnly() {
+    _g.select(".links-layer").selectAll(".link").attr("d", _linkPath);
+    _g.select(".links-layer").selectAll(".link-hit").attr("d", _linkPath);
   }
 
   function renderNodesOnly() {
@@ -1111,6 +1116,7 @@
       _simulation.stop();
       _data.nodes.forEach(n => { n.vx = 0; n.vy = 0; });
       renderNodesOnly();
+      renderLinksOnly();
     } else {
       _simulation.alphaTarget(0).alpha(0.08).restart();
     }
@@ -1153,6 +1159,7 @@
     if (_dragTargetParent) _dragTargetProject = _dragTargetParent.project_id;
     setDragFeedback(d, _dragTargetProject, _dragTargetParent);
     renderNodesOnly();
+    renderLinksOnly();
     renderHulls();
   }
   function dragEnded(e, d) {
@@ -1172,6 +1179,7 @@
       if (restore) { d.x = restore.x; d.y = restore.y; }
       stopLayoutMotion();
       renderNodesOnly();
+      renderLinksOnly();
       clearDragFeedback();
       _dragDropHulls = null;
       _dragActive = false;
