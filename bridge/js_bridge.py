@@ -380,6 +380,8 @@ class JSBridge:
                 self._rename_project(msg["project_id"], msg["name"])
             elif action == "refresh_thumb":
                 self._capture_one(int(msg["xid"]), reason="manual", force=True)
+            elif action == "place_window":
+                self._place_window(int(msg["xid"]), str(msg.get("placement", "")))
             elif action == "refresh_all_thumbs":
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
@@ -460,6 +462,86 @@ class JSBridge:
                 GLib.timeout_add(140, flash_window_rect, x, y, width, height)
                 return
         log.warning("activate: window xid=%d not found", xid)
+
+    def _place_window(self, xid: int, placement: str) -> None:
+        import gi
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Gdk, Wnck
+
+        screen = Wnck.Screen.get_default()
+        screen.force_update()
+        target = None
+        for w in screen.get_windows():
+            if w.get_xid() == xid:
+                target = w
+                break
+        if target is None:
+            log.warning("place_window: window xid=%d not found", xid)
+            return
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            log.warning("place_window: no GDK display")
+            return
+
+        wx, wy, ww, wh = target.get_geometry()
+        cx = wx + ww // 2
+        cy = wy + wh // 2
+        monitor = None
+        for idx in range(display.get_n_monitors()):
+            mon = display.get_monitor(idx)
+            if mon is None:
+                continue
+            rect = mon.get_geometry()
+            if rect.x <= cx < rect.x + rect.width and rect.y <= cy < rect.y + rect.height:
+                monitor = mon
+                break
+        if monitor is None:
+            monitor = display.get_primary_monitor() or display.get_monitor(0)
+        if monitor is None:
+            log.warning("place_window: no monitor found")
+            return
+
+        area = monitor.get_workarea()
+        if placement == "left_half":
+            x, y, width, height = area.x, area.y, area.width // 2, area.height
+        elif placement == "right_half":
+            width, height = area.width - area.width // 2, area.height
+            x, y = area.x + area.width // 2, area.y
+        elif placement == "left_third":
+            x, y, width, height = area.x, area.y, area.width // 3, area.height
+        elif placement == "middle_third":
+            third = area.width // 3
+            x, y, width, height = area.x + third, area.y, third, area.height
+        elif placement == "right_third":
+            third = area.width // 3
+            x, y, width, height = area.x + 2 * third, area.y, area.width - 2 * third, area.height
+        else:
+            log.warning("place_window: unknown placement=%r xid=%s", placement, xid)
+            return
+
+        target.unmaximize()
+        target.set_geometry(
+            Wnck.WindowGravity.CURRENT,
+            Wnck.WindowMoveResizeMask.X
+            | Wnck.WindowMoveResizeMask.Y
+            | Wnck.WindowMoveResizeMask.WIDTH
+            | Wnck.WindowMoveResizeMask.HEIGHT,
+            int(x),
+            int(y),
+            int(width),
+            int(height),
+        )
+        log.info(
+            "place_window xid=%s placement=%s geometry=%sx%s+%s+%s",
+            xid,
+            placement,
+            width,
+            height,
+            x,
+            y,
+        )
 
     def _move_node(self, xid: int, target_project_id: str,
                    with_children) -> None:

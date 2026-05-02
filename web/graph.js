@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0218";
+  const GRAPH_VERSION = "20260502-0227";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -1677,6 +1677,8 @@
     if (!_ctxNode) return;
     if (action === "activate") {
       sendToBackend({ action: "activate", xid: _ctxNode.xid });
+    } else if (action.startsWith("place_")) {
+      sendToBackend({ action: "place_window", xid: _ctxNode.xid, placement: action.slice("place_".length) });
     } else if (action === "refresh_thumb") {
       sendToBackend({ action: "refresh_thumb", xid: _ctxNode.xid });
     } else if (action === "rename_project") {

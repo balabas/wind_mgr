@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>wind_mgr</title>
-  <link rel="stylesheet" href="style.css?v=20260502-0218">
+  <link rel="stylesheet" href="style.css?v=20260502-0227">
 </head>
 <body>
 
@@ -24,6 +24,13 @@
 
 <!-- Node context menu -->
 <div id="context-menu">
+  <div class="menu-header">Place window to part of screen</div>
+  <div class="menu-item" onclick="ctxAction('place_right_half')">__|##</div>
+  <div class="menu-item" onclick="ctxAction('place_left_half')">##|__</div>
+  <div class="menu-item" onclick="ctxAction('place_right_third')">__|__|##</div>
+  <div class="menu-item" onclick="ctxAction('place_middle_third')">__|##|__</div>
+  <div class="menu-item" onclick="ctxAction('place_left_third')">##|__|__</div>
+  <div class="menu-separator"></div>
   <div class="menu-header">Window actions</div>
   <div class="menu-item" onclick="ctxAction('activate')">▶ Activate window</div>
   <div class="menu-item" onclick="ctxAction('refresh_thumb')">↺ Refresh thumbnail</div>
@@ -42,7 +49,7 @@
 </div>
 
 <script src="d3.min.js?v=20260501-0108"></script>
-<script src="config-loader.js?v=20260502-0218"></script>
-<script src="graph.js?v=20260502-0218"></script>
+<script src="config-loader.js?v=20260502-0227"></script>
+<script src="graph.js?v=20260502-0227"></script>
 </body>
 </html>
