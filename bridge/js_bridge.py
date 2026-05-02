@@ -129,7 +129,7 @@ class JSBridge:
             self._hovered_xid = None
             self._stop_hover_refresh_timer()
             self._hide_live_preview()
-            log.info("ui hidden: suspended graph and paused thumbnail refresh")
+            log.info("ui hidden: suspended graph; active/hover refresh paused, background refresh continues")
         else:
             log.info("ui visible: graph and thumbnail refresh enabled")
 
@@ -1273,16 +1273,20 @@ class JSBridge:
         return True
 
     def _refresh_background_thumb_tick(self) -> bool:
-        if not self._ui_visible:
-            return True
         active_xid = self._active_window_xid(allow_fallback=False)
+        excluded_active_xid = active_xid if self._ui_visible else None
         records = [
             r for r in self._reg.all_alive()
-            if not _is_self_record(r) and r.xid != active_xid and r.xid != self._hovered_xid
+            if not _is_self_record(r)
+            and r.xid != excluded_active_xid
+            and r.xid != self._hovered_xid
         ]
         if not records:
             return True
-        record = self._pick_background_record(records, active_xid)
+        record = self._pick_background_record(
+            records,
+            active_xid if self._ui_visible else None,
+        )
         if record is None:
             return True
         self._capture_one(record.xid, reason="background")
