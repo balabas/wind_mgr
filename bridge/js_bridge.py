@@ -3,7 +3,9 @@ from collections import OrderedDict
 import configparser
 import json
 import logging
+import os
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
 import gi
@@ -61,6 +63,11 @@ class JSBridge:
         self._hover_refresh_ms = 2000
         self._hovered_xid: int | None = None
         self._hover_refresh_tag: int | None = None
+        self._js_msg_count = 0
+        self._js_msg_rate_t0 = time.monotonic()
+        self._cpu_probe_last_wall: float | None = None
+        self._cpu_probe_last_proc: float | None = None
+        self._cpu_probe_last_threads: dict[int, float] = {}
 
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH)
@@ -109,11 +116,22 @@ class JSBridge:
 
     def set_ui_visible(self, visible: bool) -> None:
         self._ui_visible = visible
+        if self._webview is not None:
+            suspended = str(not visible).lower()
+            js = f"try{{if(window.windMgr)window.windMgr.setSuspended({suspended});}}catch(e){{}}"
+            self._webview.evaluate_javascript(
+                js, -1, None, None, None,
+                self._js_done_cb, None
+            )
         if not visible:
             self._pending_thumb_xids.clear()
+            self._capture_queue.clear()
             self._hovered_xid = None
             self._stop_hover_refresh_timer()
             self._hide_live_preview()
+            log.info("ui hidden: suspended graph and paused thumbnail refresh")
+        else:
+            log.info("ui visible: graph and thumbnail refresh enabled")
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
@@ -373,7 +391,25 @@ class JSBridge:
         except Exception:
             log.exception("Failed to parse JS message")
             return
+        self._record_js_message_rate()
         GLib.idle_add(self._handle_message, msg)
+
+    def _record_js_message_rate(self) -> None:
+        self._js_msg_count += 1
+        now = time.monotonic()
+        elapsed = now - self._js_msg_rate_t0
+        if elapsed < 5.0:
+            return
+        rate = self._js_msg_count / elapsed
+        log.debug(
+            "[msg-rate] %.1f msgs/s visible=%s queue=%s capture_running=%s",
+            rate,
+            self._ui_visible,
+            len(self._capture_queue),
+            self._capture_running_xid,
+        )
+        self._js_msg_count = 0
+        self._js_msg_rate_t0 = now
 
     def _handle_message(self, msg: dict) -> bool:
         action = msg.get("action", "")
@@ -1147,6 +1183,7 @@ class JSBridge:
                 self._bg_refresh_ms, self._refresh_background_thumb_tick
             )
         GLib.timeout_add(5000, self._main_loop_latency_probe)
+        GLib.timeout_add(10000, self._cpu_metrics_probe)
 
     def _main_loop_latency_probe(self) -> bool:
         import time as _time
@@ -1159,16 +1196,85 @@ class JSBridge:
         GLib.idle_add(_idle)
         return True
 
+    def _cpu_metrics_probe(self) -> bool:
+        now = time.monotonic()
+        proc_cpu = time.process_time()
+        if self._cpu_probe_last_wall is None or self._cpu_probe_last_proc is None:
+            self._cpu_probe_last_wall = now
+            self._cpu_probe_last_proc = proc_cpu
+            self._cpu_probe_last_threads = self._read_thread_cpu_times()
+            return True
+
+        elapsed = max(0.001, now - self._cpu_probe_last_wall)
+        cpu_pct = max(0.0, (proc_cpu - self._cpu_probe_last_proc) / elapsed * 100.0)
+        thread_times = self._read_thread_cpu_times()
+        thread_deltas: list[tuple[float, int, str]] = []
+        for tid, cpu_time in thread_times.items():
+            prev = self._cpu_probe_last_threads.get(tid)
+            if prev is None:
+                continue
+            delta_pct = max(0.0, (cpu_time - prev) / elapsed * 100.0)
+            if delta_pct >= 0.5:
+                thread_deltas.append((delta_pct, tid, self._read_thread_name(tid)))
+        thread_deltas.sort(reverse=True)
+        top_threads = ", ".join(
+            f"{name}:{tid}:{pct:.1f}%" for pct, tid, name in thread_deltas[:5]
+        ) or "none"
+        log.info(
+            "[cpu] process=%.1f%% visible=%s latency=%.1fms queue=%s capture_running=%s top_threads=%s",
+            cpu_pct,
+            self._ui_visible,
+            self._main_loop_latency_ms,
+            len(self._capture_queue),
+            self._capture_running_xid,
+            top_threads,
+        )
+        self._cpu_probe_last_wall = now
+        self._cpu_probe_last_proc = proc_cpu
+        self._cpu_probe_last_threads = thread_times
+        return True
+
+    def _read_thread_cpu_times(self) -> dict[int, float]:
+        ticks_per_second = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        result: dict[int, float] = {}
+        task_dir = Path("/proc/self/task")
+        try:
+            for thread_dir in task_dir.iterdir():
+                if not thread_dir.name.isdigit():
+                    continue
+                stat_text = (thread_dir / "stat").read_text(encoding="utf-8")
+                right_paren = stat_text.rfind(")")
+                if right_paren < 0:
+                    continue
+                fields = stat_text[right_paren + 2:].split()
+                # After removing "pid (comm)", utime/stime are fields 12/13.
+                utime = int(fields[11])
+                stime = int(fields[12])
+                result[int(thread_dir.name)] = (utime + stime) / ticks_per_second
+        except Exception:
+            log.debug("failed to read /proc thread cpu metrics", exc_info=True)
+        return result
+
+    def _read_thread_name(self, tid: int) -> str:
+        try:
+            return Path(f"/proc/self/task/{tid}/comm").read_text(encoding="utf-8").strip()
+        except Exception:
+            return "thread"
+
     def _refresh_active_thumb_tick(self) -> bool:
         # Active-card blinking is frontend-only. Screenshot refresh remains
         # independent from graph interaction; the queue only prevents parallel
         # captures and gives rarer updates priority.
+        if not self._ui_visible:
+            return True
         xid = self._active_window_xid(allow_fallback=False)
         if xid is not None and xid != self._hovered_xid:
             self._capture_one(xid, reason="active")
         return True
 
     def _refresh_background_thumb_tick(self) -> bool:
+        if not self._ui_visible:
+            return True
         active_xid = self._active_window_xid(allow_fallback=False)
         records = [
             r for r in self._reg.all_alive()
@@ -1205,6 +1311,8 @@ class JSBridge:
         )
 
     def _capture_one(self, xid: int, *, reason: str = "background", force: bool = False) -> None:
+        if not self._ui_visible and reason in {"active", "hover", "live-preview-idle"}:
+            return
         if not force and reason == "active" and not self._active_capture_due(xid):
             return
         record = self._reg.get(xid)
@@ -1260,7 +1368,10 @@ class JSBridge:
         self._capture.capture_async(xid, callback=_done)
         if xid not in self._icon_captured_xids and not self._capture.icon_path(xid).exists():
             self._icon_captured_xids.add(xid)
-            GLib.idle_add(self._capture.capture_icon, xid)
+            def _capture_icon_once() -> bool:
+                self._capture.capture_icon(xid)
+                return False
+            GLib.idle_add(_capture_icon_once)
 
     def _start_next_capture(self) -> None:
         if self._capture_running_xid is not None:

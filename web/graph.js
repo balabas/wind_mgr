@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0331";
+  const GRAPH_VERSION = "20260502-0405";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -392,6 +392,29 @@
 
     centerRememberedView() {
       centerRememberedView();
+    },
+
+    setSuspended(suspended) {
+      if (!_svg) return;
+      _svg.classed("suspended", !!suspended);
+      if (suspended) {
+        if (_simulation) _simulation.stop();
+        _panPerformanceActive = false;
+        if (_panFrameProbe) {
+          cancelAnimationFrame(_panFrameProbe);
+          _panFrameProbe = null;
+        }
+        if (_zoomFrame) {
+          cancelAnimationFrame(_zoomFrame);
+          _zoomFrame = null;
+        }
+        if (_backendInteractionStopTimer) {
+          clearTimeout(_backendInteractionStopTimer);
+          _backendInteractionStopTimer = null;
+        }
+      } else if (_simulation && _simulation.alpha() > _simulation.alphaMin()) {
+        _simulation.restart();
+      }
     },
   };
 

@@ -112,7 +112,10 @@ def main() -> None:
 
             for record in alive:
                 capture.capture_async(record.xid, callback=_on_initial_done)
-                GLib.idle_add(capture.capture_icon, record.xid)
+                def _capture_initial_icon(xid: int = record.xid) -> bool:
+                    capture.capture_icon(xid)
+                    return False
+                GLib.idle_add(_capture_initial_icon)
 
         from core.events import EVT_REGISTRY_READY
         bus.emit(EVT_REGISTRY_READY)

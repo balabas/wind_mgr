@@ -125,6 +125,15 @@ svg#graph.is-panning .node-g.active-window-new .active-overlay {
   animation: none;
   opacity: 0.15;
 }
+/* Hidden wind_mgr keeps the page loaded so D3 positions survive hide/show.
+   Stop CSS animation/transition work while GTK window is hidden. */
+svg#graph.suspended * {
+  animation: none !important;
+  transition: none !important;
+}
+svg#graph.suspended .active-overlay {
+  opacity: 0 !important;
+}
 @keyframes active-overlay-flash {
   0%, 100% { opacity: 0.08; }
   50%      { opacity: 0.28; }

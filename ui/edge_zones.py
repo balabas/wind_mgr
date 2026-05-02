@@ -63,7 +63,7 @@ class EdgeZoneWatcher:
             return
         if self._timer_id is not None:
             return
-        interval = max(20, self._config.poll_interval_ms)
+        interval = max(80, self._config.poll_interval_ms)
         self._timer_id = GLib.timeout_add(interval, self._poll)
         log.info(
             "edge zones enabled: edge=%spx poll=%sms cooldown=%sms top=%s bottom=%s",
@@ -188,7 +188,7 @@ def read_edge_zone_config() -> EdgeZoneConfig:
     return EdgeZoneConfig(
         enabled=cfg.getboolean(section, "enabled", fallback=False),
         edge_size=max(1, cfg.getint(section, "edge_size", fallback=2)),
-        poll_interval_ms=max(20, cfg.getint(section, "poll_interval_ms", fallback=80)),
+        poll_interval_ms=max(80, cfg.getint(section, "poll_interval_ms", fallback=80)),
         cooldown_ms=max(0, cfg.getint(section, "toggle_cooldown_ms", fallback=700)),
         bottom_action=cfg.get(section, "bottom_action", fallback="toggle"),
         top_action=cfg.get(section, "top_action", fallback="hide"),

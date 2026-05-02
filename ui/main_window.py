@@ -165,8 +165,10 @@ class MainWindow:
     def _on_load_changed(self, webview: WebKit2.WebView,
                          event: WebKit2.LoadEvent) -> None:
         if event == WebKit2.LoadEvent.FINISHED:
-            # Small delay to let D3 initialise before first push
-            GLib.timeout_add(300, self._initial_push)
+            uri = webview.get_uri() or ""
+            if "index.html" in uri:
+                # Small delay to let D3 initialise before first push
+                GLib.timeout_add(300, self._initial_push)
 
     #def _bind_hotkey(self) -> None:
     #    bind_hotkey(lambda: GLib.idle_add(self.toggle))
@@ -285,7 +287,10 @@ class MainWindow:
             if edge_context is not None:
                 self._last_edge_monitor = edge_context.monitor_index
             self._visible = True
-            self._bridge.push_graph()
+            if self._webview and (self._webview.get_uri() or "").startswith("about:"):
+                self._webview.load_uri(INDEX_URI)
+            else:
+                self._bridge.push_graph()
 
     def _move_to_monitor(self, edge_context: EdgeZoneContext) -> None:
         if not self._win:

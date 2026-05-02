@@ -81,7 +81,11 @@ class ScreenshotCapture:
         self._executor.submit(self._capture_worker, xid, callback)
 
     def capture_icon(self, xid: int) -> bool:
-        """Save the Wnck app icon. Must run on GTK main thread."""
+        """Save the Wnck app icon on GTK main thread.
+
+        Return ``False`` so the method is safe if passed directly to
+        GLib.idle_add; GLib treats ``True`` as "repeat forever".
+        """
         try:
             screen = Wnck.Screen.get_default()
             for w in screen.get_windows():
@@ -93,7 +97,7 @@ class ScreenshotCapture:
                             GdkPixbuf.InterpType.BILINEAR,
                         )
                         scaled.savev(str(self.icon_path(xid)), "png", [], [])
-                        return True
+                        return False
         except Exception:
             log.debug("Failed to capture icon for xid=%d", xid, exc_info=True)
         return False
