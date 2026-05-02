@@ -2,14 +2,50 @@ from __future__ import annotations
 
 import logging
 import math
+import ctypes
 
 import cairo
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+gi.require_version("GdkX11", "3.0")
+from gi.repository import Gdk, GdkX11, GLib, Gtk
 
 log = logging.getLogger(__name__)
+
+SHAPE_INPUT = 2
+
+try:
+    _libx11 = ctypes.CDLL("libX11.so.6")
+    _libxfixes = ctypes.CDLL("libXfixes.so.3")
+except OSError:
+    _libx11 = None
+    _libxfixes = None
+
+_XFIXES_READY = False
+
+
+def _setup_xfixes() -> bool:
+    global _XFIXES_READY
+    if _XFIXES_READY:
+        return True
+    if _libx11 is None or _libxfixes is None:
+        return False
+    display_p = ctypes.c_void_p
+    window = ctypes.c_ulong
+    region = ctypes.c_ulong
+    _libx11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    _libx11.XOpenDisplay.restype = display_p
+    _libx11.XCloseDisplay.argtypes = [display_p]
+    _libx11.XFlush.argtypes = [display_p]
+    _libxfixes.XFixesCreateRegion.argtypes = [display_p, ctypes.c_void_p, ctypes.c_int]
+    _libxfixes.XFixesCreateRegion.restype = region
+    _libxfixes.XFixesSetWindowShapeRegion.argtypes = [
+        display_p, window, ctypes.c_int, ctypes.c_int, ctypes.c_int, region
+    ]
+    _libxfixes.XFixesDestroyRegion.argtypes = [display_p, region]
+    _XFIXES_READY = True
+    return True
 
 
 class WindowFlashOverlay:
@@ -40,20 +76,48 @@ class WindowFlashOverlay:
         self._win.move(self._x, self._y)
         self._win.resize(self._width, self._height)
         self._win.show_all()
+        self._make_input_transparent()
+        GLib.idle_add(self._make_input_transparent)
+        GLib.timeout_add(80, self._make_input_transparent)
         self._timer_id = GLib.timeout_add(45, self._tick)
 
     def _rgba_visual(self):
         screen = Gdk.Screen.get_default()
         return screen.get_rgba_visual() if screen is not None else None
 
-    def _make_input_transparent(self, _widget) -> None:
+    def _make_input_transparent(self, *_args) -> bool:
         gdk_window = self._win.get_window()
         if gdk_window is None:
-            return
+            return False
         try:
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
+            self._set_xfixes_empty_input_region(gdk_window)
         except Exception:
             log.debug("could not make window flash overlay input-transparent", exc_info=True)
+        return False
+
+    def _set_xfixes_empty_input_region(self, gdk_window: GdkX11.X11Window) -> None:
+        if not _setup_xfixes() or not hasattr(gdk_window, "get_xid"):
+            return
+        display = _libx11.XOpenDisplay(None)
+        if not display:
+            return
+        region = 0
+        try:
+            region = _libxfixes.XFixesCreateRegion(display, None, 0)
+            _libxfixes.XFixesSetWindowShapeRegion(
+                display,
+                int(gdk_window.get_xid()),
+                SHAPE_INPUT,
+                0,
+                0,
+                region,
+            )
+            _libx11.XFlush(display)
+        finally:
+            if region:
+                _libxfixes.XFixesDestroyRegion(display, region)
+            _libx11.XCloseDisplay(display)
 
     def _tick(self) -> bool:
         elapsed = (GLib.get_monotonic_time() // 1000) - self._started_ms
