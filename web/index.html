@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>wind_mgr</title>
-  <link rel="stylesheet" href="style.css?v=20260502-0227">
+  <link rel="stylesheet" href="style.css?v=20260502-0321">
 </head>
 <body>
 
@@ -24,22 +24,23 @@
 
 <!-- Node context menu -->
 <div id="context-menu">
+  <div class="menu-header">Monitors</div>
+  <div id="ctx-monitor-list"></div>
+  <div class="menu-separator"></div>
   <div class="menu-header">Place window to part of screen</div>
-  <div class="menu-item" onclick="ctxAction('place_right_half')">__|##</div>
-  <div class="menu-item" onclick="ctxAction('place_left_half')">##|__</div>
-  <div class="menu-item" onclick="ctxAction('place_right_third')">__|__|##</div>
-  <div class="menu-item" onclick="ctxAction('place_middle_third')">__|##|__</div>
-  <div class="menu-item" onclick="ctxAction('place_left_third')">##|__|__</div>
+  <div id="ctx-placement-list"></div>
+  <div class="menu-separator"></div>
+  <div class="menu-submenu" id="ctx-move-project-submenu">
+    <div class="menu-item submenu-trigger">Move to project <span>›</span></div>
+    <div class="submenu-panel" id="ctx-project-list"></div>
+  </div>
+  <div class="menu-separator"></div>
+  <div class="menu-item" onclick="ctxAction('rename_project')">✎ Rename project</div>
   <div class="menu-separator"></div>
   <div class="menu-header">Window actions</div>
   <div class="menu-item" onclick="ctxAction('activate')">▶ Activate window</div>
   <div class="menu-item" onclick="ctxAction('refresh_thumb')">↺ Refresh thumbnail</div>
   <div class="menu-item" onclick="ctxAction('detach')">✂ Detach from parent</div>
-  <div class="menu-separator"></div>
-  <div class="menu-header">Move with children to project</div>
-  <div id="ctx-project-list"></div>
-  <div class="menu-separator"></div>
-  <div class="menu-item" onclick="ctxAction('rename_project')">✎ Rename project</div>
 </div>
 
 <!-- Link context menu -->
@@ -49,7 +50,7 @@
 </div>
 
 <script src="d3.min.js?v=20260501-0108"></script>
-<script src="config-loader.js?v=20260502-0227"></script>
-<script src="graph.js?v=20260502-0227"></script>
+<script src="config-loader.js?v=20260502-0321"></script>
+<script src="graph.js?v=20260502-0321"></script>
 </body>
 </html>

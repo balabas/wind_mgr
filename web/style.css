@@ -230,11 +230,6 @@ svg#graph.is-panning .node-g.active-window-new .active-overlay {
   display: none;
   overflow: hidden;
 }
-#ctx-project-list {
-  max-height: min(360px, calc(100vh - 190px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
 #context-menu .menu-item {
   padding: 8px 14px;
   font-size: 12px;
@@ -260,6 +255,38 @@ svg#graph.is-panning .node-g.active-window-new .active-overlay {
   color: #666;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+#context-menu .menu-submenu {
+  position: relative;
+}
+#context-menu .submenu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+#context-menu .submenu-panel {
+  position: fixed;
+  display: none;
+  min-width: 220px;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #1e1e3e;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+  z-index: 10000;
+}
+#context-menu .menu-submenu:hover .submenu-panel,
+#context-menu .menu-submenu:focus-within .submenu-panel {
+  display: block;
+}
+#context-menu .menu-item.disabled {
+  color: #666;
+  cursor: default;
+  pointer-events: none;
 }
 
 #link-context-menu {

@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0227";
+  const GRAPH_VERSION = "20260502-0321";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -1618,8 +1618,12 @@
     const menu = document.getElementById("context-menu");
     e.stopPropagation();
 
+    populatePlacementMenu(d);
+    populateMonitorMenu(d);
+
     const projectList = document.getElementById("ctx-project-list");
     projectList.innerHTML = "";
+    let projectItemCount = 0;
     _data.projects.forEach(p => {
       if (p.id === d.project_id) return;
       const item = document.createElement("div");
@@ -1630,7 +1634,14 @@
         hideContextMenu();
       };
       projectList.appendChild(item);
+      projectItemCount += 1;
     });
+    if (projectItemCount === 0) {
+      const item = document.createElement("div");
+      item.className = "menu-item disabled";
+      item.textContent = "No other projects";
+      projectList.appendChild(item);
+    }
 
     menu.style.display = "block";
     menu.style.left = "0px";
@@ -1639,6 +1650,82 @@
     const pad = 8;
     menu.style.left = Math.max(pad, Math.min(e.clientX, window.innerWidth - rect.width - pad)) + "px";
     menu.style.top = Math.max(pad, Math.min(e.clientY, window.innerHeight - rect.height - pad)) + "px";
+    placeProjectSubmenu();
+  }
+
+  function populateMonitorMenu(d) {
+    const list = document.getElementById("ctx-monitor-list");
+    if (!list) return;
+    list.innerHTML = "";
+    [
+      [0, "Monitor 1"],
+      [1, "Monitor 2"],
+    ].forEach(([monitorIndex, label]) => {
+      const item = document.createElement("div");
+      item.className = "menu-item";
+      item.textContent = label;
+      item.onclick = () => {
+        sendToBackend({ action: "move_window_monitor", xid: d.xid, monitor_index: monitorIndex });
+        hideContextMenu();
+      };
+      list.appendChild(item);
+    });
+  }
+
+  function placeProjectSubmenu() {
+    const trigger = document.getElementById("ctx-move-project-submenu");
+    const panel = document.getElementById("ctx-project-list");
+    if (!trigger || !panel) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pad = 8;
+    panel.style.left = "0px";
+    panel.style.top = "0px";
+    panel.style.display = "block";
+    const panelRect = panel.getBoundingClientRect();
+    panel.style.display = "";
+    const opensLeft = triggerRect.right + panelRect.width + pad > window.innerWidth;
+    const left = opensLeft
+      ? Math.max(pad, triggerRect.left - panelRect.width)
+      : Math.min(triggerRect.right, window.innerWidth - panelRect.width - pad);
+    const top = Math.max(pad, Math.min(triggerRect.top, window.innerHeight - panelRect.height - pad));
+    panel.style.left = left + "px";
+    panel.style.top = top + "px";
+  }
+
+  function populatePlacementMenu(d) {
+    const list = document.getElementById("ctx-placement-list");
+    list.innerHTML = "";
+    const rawW = Number(d.window_width) || 0;
+    const rawH = Number(d.window_height) || 0;
+    const orientation = String(d.monitor_orientation || "").toLowerCase();
+    const vertical = orientation === "vertical" || (orientation !== "horizontal" && rawH > rawW);
+    const items = vertical
+      ? [
+          ["maximize", "Maximize"],
+          ["top_half", "1/2"],
+          ["bottom_half", "2/2"],
+          ["top_third", "1/3"],
+          ["middle_third", "2/3"],
+          ["bottom_third", "3/3"],
+        ]
+      : [
+          ["maximize", "Maximize"],
+          ["right_half", "__|##"],
+          ["left_half", "##|__"],
+          ["right_third", "__|__|##"],
+          ["middle_third", "__|##|__"],
+          ["left_third", "##|__|__"],
+        ];
+    items.forEach(([placement, label]) => {
+      const item = document.createElement("div");
+      item.className = "menu-item";
+      item.textContent = label;
+      item.onclick = () => {
+        sendToBackend({ action: "place_window", xid: d.xid, placement });
+        hideContextMenu();
+      };
+      list.appendChild(item);
+    });
   }
 
   function hideContextMenu() {

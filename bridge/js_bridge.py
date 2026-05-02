@@ -255,6 +255,7 @@ class JSBridge:
     def _serialize(self) -> dict:
         alive = [r for r in self._reg.all_alive() if not _is_self_record(r)]
         projects = self._tree.get_projects()
+        monitor_orientation = self._window_monitor_orientations()
 
         proj_id_set = {p["id"] for p in projects}
 
@@ -283,6 +284,7 @@ class JSBridge:
                 "active_directory": r.metadata.get("active_directory", ""),
                 "window_width": r.metadata.get("window_width", 0),
                 "window_height": r.metadata.get("window_height", 0),
+                "monitor_orientation": monitor_orientation.get(r.xid, ""),
                 "project_id": pid,
                 "parent_xid": r.parent_xid,
                 "thumb_url": self._capture.thumb_url(r.xid),
@@ -301,6 +303,36 @@ class JSBridge:
         active_xid = self._active_window_xid(allow_fallback=True)
 
         return {"nodes": nodes, "edges": edges, "projects": projects, "active_xid": active_xid}
+
+    def _window_monitor_orientations(self) -> dict[int, str]:
+        try:
+            import gi
+            gi.require_version("Gdk", "3.0")
+            gi.require_version("Wnck", "3.0")
+            from gi.repository import Gdk, Wnck
+
+            display = Gdk.Display.get_default()
+            screen = Wnck.Screen.get_default()
+            if display is None or screen is None:
+                return {}
+            screen.force_update()
+            orientations: dict[int, str] = {}
+            for window in screen.get_windows():
+                wx, wy, ww, wh = window.get_geometry()
+                cx = wx + ww // 2
+                cy = wy + wh // 2
+                for idx in range(display.get_n_monitors()):
+                    monitor = display.get_monitor(idx)
+                    if monitor is None:
+                        continue
+                    area = monitor.get_workarea()
+                    if area.x <= cx < area.x + area.width and area.y <= cy < area.y + area.height:
+                        orientations[window.get_xid()] = "vertical" if area.height > area.width else "horizontal"
+                        break
+            return orientations
+        except Exception:
+            log.debug("could not compute monitor orientations", exc_info=True)
+            return {}
 
     def _active_window_xid(self, *, allow_fallback: bool = False) -> int | None:
         try:
@@ -382,6 +414,8 @@ class JSBridge:
                 self._capture_one(int(msg["xid"]), reason="manual", force=True)
             elif action == "place_window":
                 self._place_window(int(msg["xid"]), str(msg.get("placement", "")))
+            elif action == "move_window_monitor":
+                self._move_window_to_monitor(int(msg["xid"]), int(msg.get("monitor_index", 0)))
             elif action == "refresh_all_thumbs":
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
@@ -485,6 +519,10 @@ class JSBridge:
             log.warning("place_window: no GDK display")
             return
 
+        if placement == "maximize":
+            self._maximize_window(target, xid)
+            return
+
         wx, wy, ww, wh = target.get_geometry()
         cx = wx + ww // 2
         cy = wy + wh // 2
@@ -504,44 +542,329 @@ class JSBridge:
             return
 
         area = monitor.get_workarea()
-        if placement == "left_half":
-            x, y, width, height = area.x, area.y, area.width // 2, area.height
-        elif placement == "right_half":
-            width, height = area.width - area.width // 2, area.height
-            x, y = area.x + area.width // 2, area.y
-        elif placement == "left_third":
-            x, y, width, height = area.x, area.y, area.width // 3, area.height
-        elif placement == "middle_third":
-            third = area.width // 3
-            x, y, width, height = area.x + third, area.y, third, area.height
-        elif placement == "right_third":
-            third = area.width // 3
-            x, y, width, height = area.x + 2 * third, area.y, area.width - 2 * third, area.height
+        monitor_is_vertical = area.height > area.width
+        if monitor_is_vertical:
+            x, y, width, height = self._vertical_monitor_placement(area, placement)
         else:
+            x, y, width, height = self._horizontal_monitor_placement(area, placement)
+        if width <= 0 or height <= 0:
             log.warning("place_window: unknown placement=%r xid=%s", placement, xid)
             return
 
-        target.unmaximize()
-        target.set_geometry(
-            Wnck.WindowGravity.CURRENT,
-            Wnck.WindowMoveResizeMask.X
-            | Wnck.WindowMoveResizeMask.Y
-            | Wnck.WindowMoveResizeMask.WIDTH
-            | Wnck.WindowMoveResizeMask.HEIGHT,
-            int(x),
-            int(y),
-            int(width),
-            int(height),
-        )
+        was_fullscreen = bool(target.is_fullscreen()) if hasattr(target, "is_fullscreen") else False
+        was_maximized = bool(target.is_maximized())
+        self._clear_window_states_for_geometry(target)
+        self._apply_window_geometry_delayed(target, x, y, width, height, delay_ms=90, attempts=10)
         log.info(
-            "place_window xid=%s placement=%s geometry=%sx%s+%s+%s",
+            "place_window xid=%s placement=%s geometry=%sx%s+%s+%s fullscreen=%s maximized=%s",
             xid,
             placement,
             width,
             height,
             x,
             y,
+            was_fullscreen,
+            was_maximized,
         )
+        GLib.timeout_add(180, self._raise_webview_toplevel)
+
+    def _move_window_to_monitor(self, xid: int, monitor_index: int) -> None:
+        import gi
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Gdk, Wnck
+
+        screen = Wnck.Screen.get_default()
+        screen.force_update()
+        target = None
+        for w in screen.get_windows():
+            if w.get_xid() == xid:
+                target = w
+                break
+        if target is None:
+            log.warning("move_window_monitor: window xid=%d not found", xid)
+            return
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            log.warning("move_window_monitor: no GDK display")
+            return
+        if monitor_index < 0 or monitor_index >= display.get_n_monitors():
+            log.warning(
+                "move_window_monitor: monitor %s unavailable, monitor_count=%s xid=%s",
+                monitor_index + 1,
+                display.get_n_monitors(),
+                xid,
+            )
+            return
+
+        source_area = self._window_workarea(display, target)
+        dest_monitor = display.get_monitor(monitor_index)
+        if dest_monitor is None:
+            log.warning("move_window_monitor: target monitor %s missing xid=%s", monitor_index + 1, xid)
+            return
+        dest_area = dest_monitor.get_workarea()
+
+        wx, wy, ww, wh = target.get_geometry()
+        was_maximized = bool(target.is_maximized())
+        if source_area is None:
+            source_area = dest_area
+
+        if was_maximized:
+            nx, ny, nw, nh = dest_area.x, dest_area.y, dest_area.width, dest_area.height
+        else:
+            rel_x = (wx - source_area.x) / max(1, source_area.width)
+            rel_y = (wy - source_area.y) / max(1, source_area.height)
+            rel_w = ww / max(1, source_area.width)
+            rel_h = wh / max(1, source_area.height)
+            nw = max(120, min(dest_area.width, round(dest_area.width * rel_w)))
+            nh = max(80, min(dest_area.height, round(dest_area.height * rel_h)))
+            nx = round(dest_area.x + rel_x * dest_area.width)
+            ny = round(dest_area.y + rel_y * dest_area.height)
+            nx = max(dest_area.x, min(nx, dest_area.x + dest_area.width - nw))
+            ny = max(dest_area.y, min(ny, dest_area.y + dest_area.height - nh))
+
+        was_fullscreen = bool(target.is_fullscreen()) if hasattr(target, "is_fullscreen") else False
+        self._clear_window_states_for_geometry(target)
+        self._apply_window_geometry_delayed(target, nx, ny, nw, nh, delay_ms=90, attempts=10)
+        if was_maximized:
+            GLib.timeout_add(180, target.maximize)
+        log.info(
+            "move_window_monitor xid=%s monitor=%s geometry=%sx%s+%s+%s fullscreen=%s maximized=%s",
+            xid,
+            monitor_index + 1,
+            nw,
+            nh,
+            nx,
+            ny,
+            was_fullscreen,
+            was_maximized,
+        )
+        GLib.timeout_add(220, self._raise_webview_toplevel)
+
+    def _clear_window_states_for_geometry(self, window) -> None:
+        try:
+            xid = window.get_xid()
+            self._send_ewmh_fullscreen_state(xid, action=0)
+            if hasattr(window, "is_fullscreen") and window.is_fullscreen() and hasattr(window, "unfullscreen"):
+                window.unfullscreen()
+                self._send_ewmh_fullscreen_state(xid, action=0)
+            if window.is_maximized():
+                window.unmaximize()
+        except Exception:
+            log.debug("could not clear window fullscreen/maximized state before geometry change", exc_info=True)
+
+    def _fullscreen_window(self, window, xid: int) -> None:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Gtk, Wnck
+
+        try:
+            if window.is_maximized():
+                window.unmaximize()
+            ts = Gtk.get_current_event_time()
+            if not ts:
+                ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
+            window.activate(ts)
+            if hasattr(window, "fullscreen"):
+                window.fullscreen()
+        except Exception:
+            log.debug("Wnck fullscreen request failed xid=%s", xid, exc_info=True)
+
+        try:
+            self._send_ewmh_fullscreen_state(xid, action=1)
+        except Exception:
+            log.debug("EWMH fullscreen request failed xid=%s", xid, exc_info=True)
+
+        GLib.timeout_add(250, self._log_window_geometry, window, "fullscreen")
+        log.info("place_window xid=%s placement=fullscreen requested", xid)
+
+    def _maximize_window(self, window, xid: int) -> None:
+        try:
+            self._clear_window_states_for_geometry(window)
+            window.maximize()
+            GLib.timeout_add(250, self._log_window_geometry, window, "maximize")
+            log.info("place_window xid=%s placement=maximize requested", xid)
+        except Exception:
+            log.exception("maximize request failed xid=%s", xid)
+
+    def _send_ewmh_fullscreen_state(self, xid: int, *, action: int) -> None:
+        from Xlib import X, display
+        from Xlib.protocol import event
+
+        dpy = display.Display()
+        try:
+            root = dpy.screen().root
+            win = dpy.create_resource_object("window", int(xid))
+            net_wm_state = dpy.intern_atom("_NET_WM_STATE")
+            fullscreen = dpy.intern_atom("_NET_WM_STATE_FULLSCREEN")
+            msg = event.ClientMessage(
+                window=win,
+                client_type=net_wm_state,
+                data=(32, [int(action), fullscreen, 0, 2, 0]),
+            )
+            root.send_event(
+                msg,
+                event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask,
+            )
+            dpy.flush()
+            log.debug("ewmh_fullscreen_state xid=%s action=%s", xid, action)
+        finally:
+            dpy.close()
+
+    def _log_window_geometry(self, window, reason: str) -> bool:
+        try:
+            import gi
+            gi.require_version("Wnck", "3.0")
+            from gi.repository import Wnck
+            screen = Wnck.Screen.get_default()
+            if screen is not None:
+                screen.force_update()
+            x, y, width, height = window.get_geometry()
+            log.info(
+                "window_geometry reason=%s xid=%s geometry=%sx%s+%s+%s fullscreen=%s maximized=%s",
+                reason,
+                window.get_xid(),
+                width,
+                height,
+                x,
+                y,
+                window.is_fullscreen() if hasattr(window, "is_fullscreen") else False,
+                window.is_maximized(),
+            )
+        except Exception:
+            log.debug("could not log window geometry reason=%s", reason, exc_info=True)
+        return False
+
+    def _apply_window_geometry_delayed(self, window, x: int, y: int, width: int, height: int,
+                                       *, delay_ms: int, attempts: int) -> None:
+        GLib.timeout_add(delay_ms, self._apply_window_geometry_once,
+                         window, x, y, width, height, attempts, 1)
+
+    def _apply_window_geometry_once(self, window, x: int, y: int, width: int, height: int,
+                                    attempts_left: int, attempt_num: int) -> bool:
+        import gi
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Wnck
+
+        try:
+            xid = window.get_xid()
+            if hasattr(window, "is_fullscreen") and window.is_fullscreen() and hasattr(window, "unfullscreen"):
+                self._send_ewmh_fullscreen_state(xid, action=0)
+                window.unfullscreen()
+                self._send_ewmh_fullscreen_state(xid, action=0)
+            if window.is_maximized():
+                window.unmaximize()
+            window.set_geometry(
+                Wnck.WindowGravity.CURRENT,
+                Wnck.WindowMoveResizeMask.X
+                | Wnck.WindowMoveResizeMask.Y
+                | Wnck.WindowMoveResizeMask.WIDTH
+                | Wnck.WindowMoveResizeMask.HEIGHT,
+                int(x),
+                int(y),
+                int(width),
+                int(height),
+            )
+            screen = Wnck.Screen.get_default()
+            if screen is not None:
+                screen.force_update()
+            ax, ay, aw, ah = window.get_geometry()
+            ok = (
+                abs(ax - int(x)) <= 12
+                and abs(ay - int(y)) <= 12
+                and abs(aw - int(width)) <= 24
+                and abs(ah - int(height)) <= 24
+            )
+            log.debug(
+                "apply_window_geometry attempt=%s requested=%sx%s+%s+%s actual=%sx%s+%s+%s ok=%s max=%s full=%s",
+                attempt_num,
+                width,
+                height,
+                x,
+                y,
+                aw,
+                ah,
+                ax,
+                ay,
+                ok,
+                window.is_maximized(),
+                window.is_fullscreen() if hasattr(window, "is_fullscreen") else False,
+            )
+            if not ok and attempts_left > 1:
+                GLib.timeout_add(
+                    150,
+                    self._apply_window_geometry_once,
+                    window,
+                    x,
+                    y,
+                    width,
+                    height,
+                    attempts_left - 1,
+                    attempt_num + 1,
+                )
+        except Exception:
+            log.debug("apply_window_geometry failed attempt=%s", attempt_num, exc_info=True)
+        return False
+
+    def _window_workarea(self, display, window):
+        wx, wy, ww, wh = window.get_geometry()
+        cx = wx + ww // 2
+        cy = wy + wh // 2
+        for idx in range(display.get_n_monitors()):
+            monitor = display.get_monitor(idx)
+            if monitor is None:
+                continue
+            rect = monitor.get_geometry()
+            if rect.x <= cx < rect.x + rect.width and rect.y <= cy < rect.y + rect.height:
+                return monitor.get_workarea()
+        return None
+
+    def _raise_webview_toplevel(self) -> bool:
+        if self._webview is None:
+            return False
+        try:
+            toplevel = self._webview.get_toplevel()
+            if hasattr(toplevel, "set_keep_above"):
+                toplevel.set_keep_above(True)
+            if hasattr(toplevel, "present"):
+                toplevel.present()
+        except Exception:
+            log.debug("could not raise wind_mgr after placing window", exc_info=True)
+        return False
+
+    def _horizontal_monitor_placement(self, area, placement: str) -> tuple[int, int, int, int]:
+        if placement in {"left_half", "top_half"}:
+            return area.x, area.y, area.width // 2, area.height
+        if placement in {"right_half", "bottom_half"}:
+            width = area.width - area.width // 2
+            return area.x + area.width // 2, area.y, width, area.height
+        if placement in {"left_third", "top_third"}:
+            return area.x, area.y, area.width // 3, area.height
+        if placement in {"middle_third"}:
+            third = area.width // 3
+            return area.x + third, area.y, third, area.height
+        if placement in {"right_third", "bottom_third"}:
+            third = area.width // 3
+            return area.x + 2 * third, area.y, area.width - 2 * third, area.height
+        return 0, 0, 0, 0
+
+    def _vertical_monitor_placement(self, area, placement: str) -> tuple[int, int, int, int]:
+        if placement in {"top_half", "left_half"}:
+            return area.x, area.y, area.width, area.height // 2
+        if placement in {"bottom_half", "right_half"}:
+            height = area.height - area.height // 2
+            return area.x, area.y + area.height // 2, area.width, height
+        if placement in {"top_third", "left_third"}:
+            return area.x, area.y, area.width, area.height // 3
+        if placement in {"middle_third"}:
+            third = area.height // 3
+            return area.x, area.y + third, area.width, third
+        if placement in {"bottom_third", "right_third"}:
+            third = area.height // 3
+            return area.x, area.y + 2 * third, area.width, area.height - 2 * third
+        return 0, 0, 0, 0
 
     def _move_node(self, xid: int, target_project_id: str,
                    with_children) -> None:
