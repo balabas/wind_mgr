@@ -566,7 +566,7 @@ class JSBridge:
             was_fullscreen,
             was_maximized,
         )
-        GLib.timeout_add(180, self._raise_webview_toplevel)
+        self._schedule_raise_webview_toplevel()
 
     def _move_window_to_monitor(self, xid: int, monitor_index: int) -> None:
         import gi
@@ -640,7 +640,7 @@ class JSBridge:
             was_fullscreen,
             was_maximized,
         )
-        GLib.timeout_add(220, self._raise_webview_toplevel)
+        self._schedule_raise_webview_toplevel()
 
     def _clear_window_states_for_geometry(self, window) -> None:
         try:
@@ -685,8 +685,7 @@ class JSBridge:
             self._clear_window_states_for_geometry(window)
             window.maximize()
             GLib.timeout_add(250, self._log_window_geometry, window, "maximize")
-            GLib.timeout_add(300, self._raise_webview_toplevel)
-            GLib.timeout_add(700, self._raise_webview_toplevel)
+            self._schedule_raise_webview_toplevel()
             log.info("place_window xid=%s placement=maximize requested", xid)
         except Exception:
             log.exception("maximize request failed xid=%s", xid)
@@ -835,6 +834,10 @@ class JSBridge:
         except Exception:
             log.debug("could not raise wind_mgr after placing window", exc_info=True)
         return False
+
+    def _schedule_raise_webview_toplevel(self) -> None:
+        for delay_ms in (180, 350, 700, 1200):
+            GLib.timeout_add(delay_ms, self._raise_webview_toplevel)
 
     def _horizontal_monitor_placement(self, area, placement: str) -> tuple[int, int, int, int]:
         if placement in {"left_half", "top_half"}:
