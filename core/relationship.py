@@ -140,7 +140,10 @@ class RelationshipTree:
         if record is None or parent is None or xid == parent_xid:
             return
         if self._would_create_cycle(xid, parent_xid):
-            log.warning("refusing parent cycle: child=%s parent=%s", xid, parent_xid)
+            if self._is_descendant(root_xid=xid, candidate_xid=parent_xid):
+                self._reparent_to_descendant(record, parent, with_children=with_children)
+            else:
+                log.warning("refusing parent cycle: child=%s parent=%s", xid, parent_xid)
             return
 
         source_project_id = self.get_project_id(record)
@@ -157,6 +160,66 @@ class RelationshipTree:
             self._move_same_project_subtree(record, source_project_id, parent_project_id)
             return
         self.move_node(xid, parent_project_id, with_children=with_children)
+
+    def _is_descendant(self, root_xid: int, candidate_xid: int) -> bool:
+        stack = list(self.get_children(root_xid))
+        visited: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current.xid == candidate_xid:
+                return True
+            if current.xid in visited:
+                continue
+            visited.add(current.xid)
+            stack.extend(self.get_children(current.xid))
+        return False
+
+    def _reparent_to_descendant(
+        self,
+        record: "WindowRecord",
+        descendant: "WindowRecord",
+        with_children=False,
+    ) -> None:
+        """Move parent under its descendant without creating a cycle.
+
+        The descendant takes the original parent slot of ``record``. The old
+        branch edge into the descendant is cut, then ``record`` becomes a child
+        of the descendant. Other children/subtrees remain attached to their
+        current node.
+        """
+        source_project_id = self.get_project_id(record)
+        target_project_id = self.get_project_id(descendant)
+        old_parent_xid = record.parent_xid
+        old_parent = self._reg.get(old_parent_xid) if old_parent_xid is not None else None
+        descendant_old_parent = self._reg.get(descendant.parent_xid) if descendant.parent_xid is not None else None
+
+        if old_parent and record.xid in old_parent.children_xids:
+            old_parent.children_xids.remove(record.xid)
+        if descendant_old_parent and descendant.xid in descendant_old_parent.children_xids:
+            descendant_old_parent.children_xids.remove(descendant.xid)
+
+        descendant.parent_xid = old_parent_xid
+        if old_parent and descendant.xid not in old_parent.children_xids:
+            old_parent.children_xids.append(descendant.xid)
+
+        record.parent_xid = descendant.xid
+        if record.xid not in descendant.children_xids:
+            descendant.children_xids.append(record.xid)
+
+        log.info(
+            "reparent parent-to-descendant: child=%s descendant_parent=%s old_parent=%s cut_from=%s mode=%r",
+            record.xid,
+            descendant.xid,
+            old_parent_xid,
+            descendant_old_parent.xid if descendant_old_parent else None,
+            with_children,
+        )
+        if with_children == "same_project":
+            self._move_same_project_subtree(record, source_project_id, target_project_id)
+        elif with_children:
+            self.move_node(record.xid, target_project_id, with_children=True)
+        else:
+            record.project_id = target_project_id
 
     def _would_create_cycle(self, child_xid: int, parent_xid: int) -> bool:
         current_xid: int | None = parent_xid
