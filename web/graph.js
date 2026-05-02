@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260502-0405";
+  const GRAPH_VERSION = "20260503-0015";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -1305,7 +1305,7 @@
     _data.nodes.forEach(n => {
       if (!n.is_alive || n.xid === dragged.xid) return;
       if (!targetProjectId || n.project_id !== targetProjectId) return;
-      if (wouldCreateParentCycle(dragged.xid, n.xid)) return;
+      if (wouldCreateParentCycle(dragged.xid, n.xid) && !isDescendantOf(dragged.xid, n.xid)) return;
       const size = cardSize(n);
       const pad = LAYOUT.dropParentInnerPad != null ? LAYOUT.dropParentInnerPad : -18;
       const x0 = (n.x || 0) - size.w / 2 - pad;
@@ -1332,6 +1332,23 @@
       current = _nodeMap[current.parent_xid];
     }
     return current && current.xid === childXid;
+  }
+
+  function isDescendantOf(rootXid, candidateXid) {
+    const stack = _data.nodes
+      .filter(n => n.is_alive && n.parent_xid === rootXid)
+      .map(n => n.xid);
+    const seen = new Set();
+    while (stack.length) {
+      const xid = stack.pop();
+      if (xid === candidateXid) return true;
+      if (seen.has(xid)) continue;
+      seen.add(xid);
+      _data.nodes.forEach(n => {
+        if (n.is_alive && n.parent_xid === xid) stack.push(n.xid);
+      });
+    }
+    return false;
   }
 
   function findProjectContainingPoint(x, y, dragged) {
