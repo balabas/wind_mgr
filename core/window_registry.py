@@ -34,7 +34,30 @@ class WindowRegistry:
     def remove(self, xid: int) -> None:
         record = self._records.get(xid)
         if record:
+            self._promote_children_to_parent(record)
             record.is_alive = False
+            record.children_xids.clear()
+
+    def _promote_children_to_parent(self, record: WindowRecord) -> None:
+        parent = self._records.get(record.parent_xid) if record.parent_xid is not None else None
+        if parent is not None and record.xid in parent.children_xids:
+            parent.children_xids.remove(record.xid)
+
+        parent_alive = parent is not None and parent.is_alive and not _is_self_record(parent)
+        new_parent_xid = parent.xid if parent_alive else None
+        for child_xid in list(record.children_xids):
+            child = self._records.get(child_xid)
+            if child is None or not child.is_alive:
+                continue
+            child.parent_xid = new_parent_xid
+            if parent_alive and child.xid not in parent.children_xids:
+                parent.children_xids.append(child.xid)
+        log.debug(
+            "promoted children of closed window xid=%s to parent=%s children=%s",
+            record.xid,
+            new_parent_xid,
+            list(record.children_xids),
+        )
 
     def get(self, xid: int) -> WindowRecord | None:
         return self._records.get(xid)
