@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260503-0015";
+  const GRAPH_VERSION = "20260503-0035";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -1821,6 +1821,8 @@
       if (name) sendToBackend({ action: "rename_project", project_id: _ctxNode.project_id, name });
     } else if (action === "detach") {
       sendToBackend({ action: "remove_link", xid: _ctxNode.xid });
+    } else if (action === "unlink_children") {
+      sendToBackend({ action: "unlink_children", xid: _ctxNode.xid });
     }
     hideContextMenu();
   }

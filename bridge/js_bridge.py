@@ -504,6 +504,8 @@ class JSBridge:
                     self.push_active_window()
             elif action == "remove_link":
                 self._remove_link(int(msg["xid"]))
+            elif action == "unlink_children":
+                self._unlink_children(int(msg["xid"]))
             elif action == "toggle_project":
                 pass  # future: collapse project
         except Exception:
@@ -991,6 +993,22 @@ class JSBridge:
         if parent and xid in parent.children_xids:
             parent.children_xids.remove(xid)
         record.parent_xid = None
+        self._reg.save()
+        self.push_graph()
+
+    def _unlink_children(self, xid: int) -> None:
+        record = self._reg.get(xid)
+        if record is None:
+            return
+        child_xids = list(record.children_xids)
+        for child_xid in child_xids:
+            child = self._reg.get(child_xid)
+            if child is None:
+                continue
+            if child.parent_xid == xid:
+                child.parent_xid = None
+        record.children_xids.clear()
+        log.info("unlinked all children: parent=%s children=%s", xid, child_xids)
         self._reg.save()
         self.push_graph()
 
