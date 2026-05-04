@@ -1077,10 +1077,19 @@ class JSBridge:
         record = self._reg.get(xid)
         if record is None or record.parent_xid is None:
             return
+        current_project_id = self._tree.get_project_id(record)
         parent = self._reg.get(record.parent_xid)
         if parent and xid in parent.children_xids:
             parent.children_xids.remove(xid)
         record.parent_xid = None
+        if record.project_id is None:
+            record.project_id = current_project_id
+        log.info(
+            "removed parent link: child=%s preserved_project=%s parent=%s",
+            xid,
+            current_project_id,
+            parent.xid if parent else None,
+        )
         self._reg.save()
         self.push_graph()
 
@@ -1089,14 +1098,23 @@ class JSBridge:
         if record is None:
             return
         child_xids = list(record.children_xids)
+        child_project_ids = {}
         for child_xid in child_xids:
             child = self._reg.get(child_xid)
             if child is None:
                 continue
+            child_project_ids[child_xid] = self._tree.get_project_id(child)
             if child.parent_xid == xid:
                 child.parent_xid = None
+            if child.project_id is None:
+                child.project_id = child_project_ids[child_xid]
         record.children_xids.clear()
-        log.info("unlinked all children: parent=%s children=%s", xid, child_xids)
+        log.info(
+            "unlinked all children: parent=%s children=%s preserved_projects=%s",
+            xid,
+            child_xids,
+            child_project_ids,
+        )
         self._reg.save()
         self.push_graph()
 
