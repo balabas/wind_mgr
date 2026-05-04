@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260504-0160";
+  const GRAPH_VERSION = "20260504-0180";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -104,6 +104,7 @@
   let _livePreviewNode = null;
   let _lastLivePreviewSentAt = 0;
   let _showActiveFlyState = null;
+  let _linkRouteOffsets = {};
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -152,7 +153,9 @@
     groupLabelGap: 18,
     hierarchyGap: 260,
     hierarchyStrength: 1.15,
-    hierarchySiblingSpread: 260,
+    hierarchySiblingSpread: 320,
+    hierarchyBranchStrength: 0.45,
+    linkCurveSpread: 70,
     clickMoveTolerancePx: 8,
     clickHoldTimeoutMs: 250,
     zoomWheelSensitivity: 0.002,
@@ -816,6 +819,7 @@
     const linkData = edges
       .map(e => ({ source: xidToNode[e.source], target: xidToNode[e.target] }))
       .filter(e => e.source && e.target);
+    _linkRouteOffsets = computeLinkRouteOffsets(linkData);
 
     // ── Edges ───────────────────────────────────────────────────────────
     const linkKey = d => `${d.source.xid}-${d.target.xid}`;
@@ -1025,18 +1029,46 @@
     const tx = d.target.x || 0, ty = d.target.y || 0;
     const ss = cardSize(d.source), ts = cardSize(d.target);
     if (d.source.project_id === d.target.project_id) {
-      const x1 = sx;
+      const route = _linkRouteOffsets[`${d.source.xid}-${d.target.xid}`] || { offset: 0 };
+      const sourceOffset = Math.max(-ss.w * 0.35, Math.min(ss.w * 0.35, route.offset * 0.35));
+      const x1 = sx + sourceOffset;
       const y1 = sy + ss.h / 2;
       const x2 = tx;
       const y2 = ty - ts.h / 2;
       const curve = Math.max(60, Math.min(220, Math.abs(y2 - y1) * 0.55));
-      const [ex, ey] = pointBeforeTarget(x2, y2, x2, y2 - curve, 12);
-      return `M${x1},${y1}C${x1},${y1 + curve} ${x2},${y2 - curve} ${ex},${ey}`;
+      const c1x = x1 + route.offset * 0.25;
+      const c2x = x2 + route.offset;
+      const [ex, ey] = pointBeforeTarget(x2, y2, c2x, y2 - curve, 12);
+      return `M${x1},${y1}C${c1x},${y1 + curve} ${c2x},${y2 - curve} ${ex},${ey}`;
     }
     const [x1, y1] = rectEdgePoint(sx, sy, tx, ty, ss.w / 2, ss.h / 2);
     const [x2, y2] = rectEdgePoint(tx, ty, sx, sy, ts.w / 2, ts.h / 2);
     const [ex, ey] = pointBeforeTarget(x2, y2, x1, y1, 12);
     return `M${x1},${y1}L${ex},${ey}`;
+  }
+
+  function computeLinkRouteOffsets(linkData) {
+    const offsets = {};
+    const byParent = new Map();
+    linkData.forEach(link => {
+      if (!link.source || !link.target) return;
+      if (link.source.project_id !== link.target.project_id) return;
+      const parentXid = link.source.xid;
+      if (!byParent.has(parentXid)) byParent.set(parentXid, []);
+      byParent.get(parentXid).push(link);
+    });
+    byParent.forEach(links => {
+      links
+        .slice()
+        .sort((a, b) => String(a.target.xid).localeCompare(String(b.target.xid)))
+        .forEach((link, i, arr) => {
+          const rank = i - (arr.length - 1) / 2;
+          offsets[`${link.source.xid}-${link.target.xid}`] = {
+            offset: rank * (LAYOUT.linkCurveSpread || 0),
+          };
+        });
+    });
+    return offsets;
   }
 
   function ticked() {
@@ -1203,14 +1235,34 @@
     const gap = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 120;
     const strength = LAYOUT.hierarchyStrength != null ? LAYOUT.hierarchyStrength : 0.2;
     const siblingSpread = LAYOUT.hierarchySiblingSpread != null ? LAYOUT.hierarchySiblingSpread : 160;
+    const branchStrength = LAYOUT.hierarchyBranchStrength != null ? LAYOUT.hierarchyBranchStrength : 0.35;
+    const sameGroupChildren = new Map();
+    linkData.forEach(e => {
+      const p = e.source, c = e.target;
+      if (!p || !c || p.project_id !== c.project_id) return;
+      if (!sameGroupChildren.has(p.xid)) sameGroupChildren.set(p.xid, []);
+      sameGroupChildren.get(p.xid).push(c);
+    });
+
+    function branchNodes(root) {
+      const nodes = [];
+      const stack = [root];
+      const seen = new Set();
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n || seen.has(n.xid)) continue;
+        seen.add(n.xid);
+        nodes.push(n);
+        (sameGroupChildren.get(n.xid) || []).forEach(child => stack.push(child));
+      }
+      return nodes;
+    }
+
     return function force(alpha) {
-      const childrenByParent = new Map();
       linkData.forEach(e => {
         const p = e.source, c = e.target;
         if (!p || !c) return;
         if (p.project_id !== c.project_id) return;
-        if (!childrenByParent.has(p.xid)) childrenByParent.set(p.xid, []);
-        childrenByParent.get(p.xid).push(c);
         const dy = (c.y || 0) - (p.y || 0);
         if (dy < gap) {
           const push = (gap - dy) * strength * alpha;
@@ -1218,7 +1270,7 @@
           p.vy -= push * 0.12;
         }
       });
-      childrenByParent.forEach((children, parentXid) => {
+      sameGroupChildren.forEach((children, parentXid) => {
         const parent = linkData.find(e => e.source && e.source.xid === parentXid)?.source;
         if (!parent || children.length < 2) return;
         children
@@ -1226,7 +1278,13 @@
           .sort((a, b) => String(a.xid).localeCompare(String(b.xid)))
           .forEach((child, i, arr) => {
             const targetX = (parent.x || 0) + (i - (arr.length - 1) / 2) * siblingSpread;
-            child.vx += (targetX - (child.x || 0)) * strength * alpha * 0.35;
+            const branch = branchNodes(child);
+            const branchCx = branch.reduce((sum, n) => sum + (n.x || 0), 0) / Math.max(1, branch.length);
+            const shift = (targetX - branchCx) * branchStrength * alpha;
+            branch.forEach((n, depth) => {
+              const factor = depth === 0 ? 1 : 0.65;
+              n.vx += shift * factor;
+            });
           });
       });
     };

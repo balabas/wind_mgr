@@ -105,6 +105,9 @@ Important layout settings:
 - `cardGroupBoundaryCornerRadius`: rounded group-outline corner radius.
 - `sameCardGroupLinkDistance`: target spacing between linked cards inside one card group.
 - `cardCollisionRadius`: invisible card collision radius.
+- `hierarchySiblingSpread`: horizontal spacing between children of the same parent card.
+- `hierarchyBranchStrength`: how strongly a whole child branch keeps its horizontal lane.
+- `linkCurveSpread`: visual offset for curved branches from the same parent card.
 - `maxZoom`: maximum zoom-in level.
 
 ## Controls
