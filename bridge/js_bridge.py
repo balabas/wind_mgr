@@ -124,13 +124,15 @@ class JSBridge:
             250,
             int(cfg.getfloat("capture", "hover_refresh_interval", fallback=0.5) * 1000),
         )
-        self._raise_same_geometry_on_card_activate = cfg.getboolean(
-            "activation",
-            "raise_same_geometry_on_card_activate",
+        self._raise_card_group_on_card_activate = _get_activation_bool(
+            cfg,
+            "default_raise_card_group_on_card_activate",
+            ("raise_card_group_on_card_activate", "raise_same_geometry_on_card_activate"),
             fallback=False,
         )
-        self._raise_same_geometry_method = cfg.get(
-            "activation",
+        self._raise_card_group_method = _get_activation_value(
+            cfg,
+            "raise_card_group_method",
             "raise_same_geometry_method",
             fallback="restack",
         ).strip().lower()
@@ -579,6 +581,8 @@ class JSBridge:
                 self._refresh_all_thumbs()
             elif action == "toggle_auto_refresh":
                 self._set_auto_refresh(msg.get("enabled", False))
+            elif action == "set_raise_card_group_on_card_activate":
+                self._set_raise_card_group_on_card_activate(msg.get("enabled", False))
             elif action == "set_interaction_active":
                 self._interaction_active = bool(msg.get("active", False))
             elif action == "card_click":
@@ -653,8 +657,8 @@ class JSBridge:
             if not ts:
                 # Wnck expects a 32-bit X timestamp, not Unix epoch time.
                 ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
-            if self._raise_same_geometry_on_card_activate:
-                self._raise_same_geometry_then_activate(int(xid), windows_by_xid, int(ts))
+            if self._raise_card_group_on_card_activate:
+                self._raise_card_group_then_activate(int(xid), windows_by_xid, int(ts))
             else:
                 target.activate(ts)
                 x, y, width, height = target.get_geometry()
@@ -662,7 +666,7 @@ class JSBridge:
             return
         log.warning("activate: window xid=%d not found", xid)
 
-    def _raise_same_geometry_then_activate(self, xid: int, windows_by_xid: dict[int, Any], ts: int) -> None:
+    def _raise_card_group_then_activate(self, xid: int, windows_by_xid: dict[int, Any], ts: int) -> None:
         record = self._reg.get(xid)
         target = windows_by_xid.get(xid)
         if record is None or target is None:
@@ -671,21 +675,21 @@ class JSBridge:
             return
 
         project_id = self._tree.get_project_id(record)
-        same_geometry_records = [
+        card_group_records = [
             r for r in self._reg.all_alive()
             if r.xid != xid and self._tree.get_project_id(r) == project_id and r.xid in windows_by_xid
         ]
-        same_geometry_records.sort(key=lambda r: (r.last_focused_at, r.xid))
-        raise_xids = [r.xid for r in same_geometry_records]
+        card_group_records.sort(key=lambda r: (r.last_focused_at, r.xid))
+        raise_xids = [r.xid for r in card_group_records]
         log.info(
-            "activate same geometry: selected=%s project=%s method=%s raise=%s",
+            "activate card group: selected=%s project=%s method=%s raise=%s",
             xid,
             project_id,
-            self._raise_same_geometry_method,
+            self._raise_card_group_method,
             raise_xids,
         )
 
-        if self._raise_same_geometry_method == "activate":
+        if self._raise_card_group_method == "activate":
             for window_xid in raise_xids:
                 window = windows_by_xid.get(window_xid)
                 if window is not None:
@@ -1407,6 +1411,10 @@ class JSBridge:
         if enabled:
             self._auto_refresh_tag = GLib.timeout_add_seconds(30, self._auto_tick)
 
+    def _set_raise_card_group_on_card_activate(self, enabled: bool) -> None:
+        self._raise_card_group_on_card_activate = bool(enabled)
+        log.info("raise card group on card activate set to %s", self._raise_card_group_on_card_activate)
+
     def _auto_tick(self) -> bool:
         if not self._auto_refresh:
             return False
@@ -1761,3 +1769,25 @@ def _is_self_record(record) -> bool:
         record.wm_class_group,
     }
     return any((v or "").strip().lower() == "wind_mgr" for v in values)
+
+
+def _activation_keys(key: str, old_key: str | tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(old_key, tuple):
+        return (key, *old_key)
+    return (key, old_key)
+
+
+def _get_activation_value(cfg: Any, key: str, old_key: str | tuple[str, ...], *, fallback: str) -> str:
+    section = "activation"
+    for option in _activation_keys(key, old_key):
+        if cfg.has_option(section, option):
+            return cfg.get(section, option, fallback=fallback)
+    return fallback
+
+
+def _get_activation_bool(cfg: Any, key: str, old_key: str | tuple[str, ...], *, fallback: bool) -> bool:
+    section = "activation"
+    for option in _activation_keys(key, old_key):
+        if cfg.has_option(section, option):
+            return cfg.getboolean(section, option, fallback=fallback)
+    return fallback

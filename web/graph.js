@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260504-0100";
+  const GRAPH_VERSION = "20260504-0160";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -162,11 +162,42 @@
   function init() {
     Promise.resolve(window.windMgrConfigReady)
       .then(() => {
-        Object.assign(LAYOUT, (window.windMgrConfig || {}).layout || {});
-        applySpacingPreset((window.windMgrConfig || {}).layout || {});
+        const layoutConfig = normalizeLayoutConfig((window.windMgrConfig || {}).layout || {});
+        Object.assign(LAYOUT, layoutConfig);
+        applySpacingPreset(layoutConfig);
         _initInner();
       })
       .catch(e => { console.error("init failed:", e.toString(), e.stack || ""); });
+  }
+
+  function normalizeLayoutConfig(config) {
+    const normalized = Object.assign({}, config || {});
+    const aliases = {
+      cardGroupSpacing: "geometrySpacing",
+      cardGroupBoundaryPadding: "hullPad",
+      cardGroupBoundaryShape: "hullShape",
+      cardGroupBoundaryCornerRadius: "hullCornerRadius",
+      dropCardGroupPadding: "dropHullPad",
+      cardGroupMargin: "projectMargin",
+      sameCardGroupLinkDistance: "sameProjectLinkDistance",
+      sameCardGroupLinkStrength: "sameProjectLinkStrength",
+      crossCardGroupLinkStrength: "crossProjectLinkStrength",
+      cardRepelStrength: "nodeCharge",
+      cardCollisionRadius: "nodeCollideRadius",
+      cardGroupTightness: "clusterStrength",
+      cardGroupCircleSeparationStrength: "projectCircleStrength",
+      cardGroupRectangleSeparationStrength: "projectRectStrength",
+      otherGroupProtectedGap: "foreignCardBoundaryGap",
+      otherGroupPushOutStrength: "foreignCardBoundaryStrength",
+      cardGroupGridStrength: "projectAnchorStrength",
+      cardGroupLabelGap: "groupLabelGap",
+    };
+    Object.entries(aliases).forEach(([readableKey, internalKey]) => {
+      if (Object.prototype.hasOwnProperty.call(normalized, readableKey)) {
+        normalized[internalKey] = normalized[readableKey];
+      }
+    });
+    return normalized;
   }
 
   function applySpacingPreset(config) {
@@ -238,9 +269,19 @@
 
     document.getElementById("btn-refresh").addEventListener("click", () =>
       sendToBackend({ action: "refresh_all_thumbs" }));
-    document.getElementById("btn-auto").addEventListener("click", function () {
-      this.classList.toggle("active");
-      sendToBackend({ action: "toggle_auto_refresh", enabled: this.classList.contains("active") });
+    const autoButton = document.getElementById("btn-auto");
+    setAutoThumbButtonState(autoButton, false);
+    autoButton.addEventListener("click", function () {
+      const enabled = !this.classList.contains("active");
+      setAutoThumbButtonState(this, enabled);
+      sendToBackend({ action: "toggle_auto_refresh", enabled });
+    });
+    const raiseGroupButton = document.getElementById("btn-raise-group");
+    setRaiseGroupButtonState(raiseGroupButton, defaultRaiseGroupOnActivate());
+    raiseGroupButton.addEventListener("click", function () {
+      const enabled = !this.classList.contains("active");
+      setRaiseGroupButtonState(this, enabled);
+      sendToBackend({ action: "set_raise_card_group_on_card_activate", enabled });
     });
     document.getElementById("btn-fit").addEventListener("click", fitView);
     document.getElementById("btn-reset").addEventListener("click", resetLayout);
@@ -250,6 +291,48 @@
       window.windMgr.updateGraph(_pendingData);
       _pendingData = null;
     }
+  }
+
+  function setAutoThumbButtonState(button, enabled) {
+    button.classList.toggle("active", enabled);
+    button.querySelector(".toggle-box").textContent = enabled ? "☑" : "□";
+    button.querySelector(".toggle-text").textContent = enabled ? "Auto Thumbs: on" : "Auto Thumbs";
+    button.title = enabled
+      ? "On: automatically refreshes all thumbnails every 30 seconds"
+      : "Off: automatically refresh all thumbnails every 30 seconds";
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+
+  function setRaiseGroupButtonState(button, enabled) {
+    button.classList.toggle("active", enabled);
+    button.querySelector(".toggle-box").textContent = enabled ? "☑" : "□";
+    button.querySelector(".toggle-text").textContent = enabled ? "Raise Group: on" : "Raise Group";
+    button.title = enabled
+      ? "On: card click raises real windows from the same card group before activating the selected window"
+      : "Off: card click only activates the selected real window";
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+
+  function defaultRaiseGroupOnActivate() {
+    const activation = (window.windMgrConfig || {}).activation || {};
+    return configBool(
+      activation.default_raise_card_group_on_card_activate,
+      configBool(
+        activation.raise_card_group_on_card_activate,
+        configBool(activation.raise_same_geometry_on_card_activate, false)
+      )
+    );
+  }
+
+  function configBool(value, fallback) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["1", "true", "yes", "on"].includes(normalized)) return true;
+      if (["0", "false", "no", "off"].includes(normalized)) return false;
+    }
+    return fallback;
   }
 
   function zoomFilter(e) {

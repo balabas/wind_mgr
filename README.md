@@ -1,11 +1,11 @@
 # wind_mgr
 
-`wind_mgr` is an X11/GTK window graph for Ubuntu/GNOME-style desktops. It shows open windows as D3/SVG cards, groups related windows into geometry hulls, and keeps card thumbnails updated without replacing the SVG overlays.
+`wind_mgr` is an X11/GTK window graph for Ubuntu/GNOME-style desktops. It shows open windows as D3/SVG cards, groups related windows into card groups with visible outlines, and keeps card thumbnails updated without replacing the SVG overlays.
 
 ## Current Behavior
 
 - Shows live windows as SVG cards inside a WebKit/D3 graph.
-- Preserves active-window border/overlay, selection, hulls, links, labels, and drag feedback because thumbnails update inside SVG `<image>` elements.
+- Preserves active-window border/overlay, selection, group outlines, links, labels, and drag feedback because thumbnails update inside SVG `<image>` elements.
 - Refreshes thumbnails by priority:
   - hovered card: `hover_refresh_interval`
   - newly opened windows: delayed by `new_window_capture_delay`, then retried by `capture_retry_interval` if capture fails
@@ -13,7 +13,7 @@
   - inactive windows: `background_refresh_interval` and `background_refresh_min_interval`
 - Uses a single capture queue so thumbnail captures do not run in parallel.
 - Capture priority is: manual, hover, new-window, retry, focus-leave, live-preview-idle, background, active.
-- Supports moving cards between geometries. Drag move carries same-geometry descendants with the parent; children already separated into another geometry stay separated.
+- Supports moving cards between card groups. Drag move carries descendants that are still in the same group with the parent; children already separated into another group stay separated.
 - Optional native XComposite/OpenGL popup preview exists, but is disabled by default because it renders above SVG overlays.
 
 ## Install
@@ -63,12 +63,19 @@ python3 main.py
 
 ## Configuration
 
-Main settings are in `config.ini`. This file is tracked because many geometry,
+Main settings are in `config.ini`. This file is tracked because many layout,
 capture, and interaction parameters are part of the app behavior.
 
 Use optional `config.user.ini` for private local overrides. It is ignored by Git
 and is loaded after `config.ini`, so values there replace the committed defaults
 without changing the distribution config.
+
+Terminology:
+
+- Card: one visual item in the graph, bound to one real desktop window.
+- Card group: a set of related cards shown inside one visible outline. Older internal code may still call this a `project`.
+- Group outline: the dashed/fill boundary around a card group. Older internal code may still call this a `hull`.
+- Link: parent/child relationship line between two cards.
 
 Startup settings:
 
@@ -86,22 +93,30 @@ Important capture settings:
 - `activity_priority_enabled`: prioritizes recently used windows for background refresh.
 - `live_preview_enabled`: enables the native XComposite/OpenGL popup preview. Default is `false` to preserve SVG overlays.
 
+Important activation settings:
+
+- `default_raise_card_group_on_card_activate`: startup default for the toolbar `Raise Group` toggle. When enabled, clicking a card first brings forward other real windows whose cards are in the same card group, then activates the clicked window.
+- `raise_card_group_method`: allowed values are `restack` and `activate`. `restack` avoids focus flicker but may be ignored by GNOME/Mutter; `activate` is more reliable but briefly focuses each group window.
+
 Important layout settings:
 
-- `geometrySpacing`: one spacing value for both horizontal and vertical distance between geometry groups.
-- `hullPad`: padding around cards when drawing geometry hulls.
-- `hullCornerRadius`: rounded hull corner radius.
-- `sameProjectLinkDistance`: target spacing between linked cards inside one geometry.
-- `nodeCollideRadius`: card collision radius.
+- `cardGroupSpacing`: one spacing value for both horizontal and vertical distance between card groups.
+- `cardGroupBoundaryPadding`: padding around cards when drawing group outlines.
+- `cardGroupBoundaryCornerRadius`: rounded group-outline corner radius.
+- `sameCardGroupLinkDistance`: target spacing between linked cards inside one card group.
+- `cardCollisionRadius`: invisible card collision radius.
 - `maxZoom`: maximum zoom-in level.
 
 ## Controls
 
 - Click card: activate that window.
-- Drag card: move it between geometries.
+- Drag card: move it between card groups.
 - Middle mouse drag: pan.
 - Middle double click: fit graph.
 - Mouse wheel: zoom.
+- Toolbar `Options` toggles:
+- `Auto Thumbs`: automatic refresh of all thumbnails every 30 seconds.
+- `Raise Group`: whether card click raises other real windows from the same card group before activating the selected window.
 - Context menu on card/link: window actions and relationship actions.
 - Configured hotkey: see `hotkey` in `config.ini`.
 

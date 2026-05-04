@@ -378,6 +378,45 @@ svg#graph.suspended .active-overlay {
 }
 .tb-btn:hover { background: #3a3a6a; color: #fff; }
 .tb-btn.active { background: #4a90d9; border-color: #4a90d9; color: #fff; }
+.toolbar-options-label {
+  color: #7a7a9a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-left: 6px;
+  text-transform: uppercase;
+}
+.tb-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid #343454;
+  border-radius: 999px;
+  color: #aaaac4;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  padding: 3px 9px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.tb-toggle:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: #55557a;
+  color: #fff;
+}
+.tb-toggle.active {
+  background: rgba(74,144,217,0.18);
+  border-color: #4a90d9;
+  color: #dcecff;
+}
+.tb-toggle .toggle-box {
+  color: #78789b;
+  font-size: 12px;
+  line-height: 1;
+}
+.tb-toggle.active .toggle-box {
+  color: #7db8ff;
+}
 
 #toolbar .spacer { flex: 1; }
 #toolbar .status-text {
