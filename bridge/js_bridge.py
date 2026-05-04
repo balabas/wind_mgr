@@ -67,6 +67,7 @@ class JSBridge:
         self._hovered_xid: int | None = None
         self._hover_refresh_tag: int | None = None
         self._pending_show_animation: dict[str, Any] | None = None
+        self._show_source_overlay: Any | None = None
         self._js_msg_count = 0
         self._js_msg_rate_t0 = time.monotonic()
         self._cpu_probe_last_wall: float | None = None
@@ -171,13 +172,15 @@ class JSBridge:
         else:
             log.info("ui visible: graph and thumbnail refresh enabled")
 
-    def push_show_active_animation(self) -> bool:
+    def push_show_active_animation(self, *, stable_origin: bool = False) -> bool:
         if self._webview is None or not self._pending_show_animation:
             return False
         payload = dict(self._pending_show_animation)
-        origin_x, origin_y = self._webview_screen_origin()
-        payload["x"] = payload["screen_x"] - origin_x
-        payload["y"] = payload["screen_y"] - origin_y
+        if stable_origin:
+            origin_x, origin_y = self._webview_screen_origin()
+            payload["x"] = payload["screen_x"] - origin_x
+            payload["y"] = payload["screen_y"] - origin_y
+            payload["stable_origin"] = True
         payload["duration_ms"] = self._active_window_show_animation_ms
         js = (
             "(function(payload){"
@@ -192,9 +195,11 @@ class JSBridge:
             f"}})({json.dumps(payload)});"
         )
         self._webview.evaluate_javascript(js, -1, None, None, None, self._js_done_cb, None)
-        log.debug("show active animation payload=%s origin=%s,%s", payload, origin_x, origin_y)
-        self._pending_show_animation = None
+        log.debug("show active animation payload=%s", payload)
         return False
+
+    def push_stable_show_active_animation(self) -> bool:
+        return self.push_show_active_animation(stable_origin=True)
 
     def _capture_show_animation_source(self) -> None:
         self._pending_show_animation = None
@@ -224,11 +229,32 @@ class JSBridge:
                     "w": int(width),
                     "h": int(height),
                     "thumb_url": self._capture.thumb_url(int(active_xid)),
+                    "thumb_path": str(self._capture.thumb_path(int(active_xid))),
                 }
+                self._show_native_source_overlay(self._pending_show_animation)
                 log.debug("captured show active animation source=%s", self._pending_show_animation)
                 return
         except Exception:
             log.debug("failed to capture show active animation source", exc_info=True)
+
+    def _show_native_source_overlay(self, payload: dict[str, Any]) -> None:
+        try:
+            if self._show_source_overlay is not None:
+                self._show_source_overlay.destroy()
+                self._show_source_overlay = None
+            from ui.window_flash import ShowSourceOverlay
+            overlay = ShowSourceOverlay(
+                int(payload["screen_x"]),
+                int(payload["screen_y"]),
+                int(payload["w"]),
+                int(payload["h"]),
+                str(payload.get("thumb_path") or ""),
+                duration_ms=min(520, max(260, self._active_window_show_animation_ms // 2)),
+            )
+            overlay.show()
+            self._show_source_overlay = overlay
+        except Exception:
+            log.debug("failed to show native source overlay", exc_info=True)
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview

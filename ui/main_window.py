@@ -261,6 +261,7 @@ class MainWindow:
             self._bridge.set_ui_visible(True)
             if edge_context is not None:
                 self._move_to_monitor(edge_context)
+            self._bridge.push_show_active_animation()
             self._win.show_all()
             self._win.deiconify()  # Разворачивает, если было свернуто
             self._win.maximize()
@@ -274,8 +275,9 @@ class MainWindow:
                 self._visible,
             )
             GLib.timeout_add(120, self._ensure_maximized_visible_window, edge_context)
-            GLib.timeout_add(180, self._bridge.push_show_active_animation)
-            GLib.timeout_add(420, self._bridge.push_show_active_animation)
+            GLib.timeout_add(20, self._bridge.push_show_active_animation)
+            GLib.timeout_add(180, self._bridge.push_stable_show_active_animation)
+            GLib.timeout_add(320, self._bridge.push_stable_show_active_animation)
             if should_center_monitor:
                 GLib.timeout_add(350, self._center_visible_graph)
                 GLib.timeout_add(700, self._center_visible_graph)

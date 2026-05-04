@@ -103,6 +103,7 @@
   let _hoveredNode = null;
   let _livePreviewNode = null;
   let _lastLivePreviewSentAt = 0;
+  let _showActiveFlyState = null;
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -470,56 +471,35 @@
   function animateActiveWindowFromScreen(payload) {
     if (!_overlay || !payload) return;
     const xid = Number(payload.xid);
+    const source = sourceViewportRect(payload);
+    const fly = ensureShowActiveFly(payload, source);
+    if (_showActiveFlyState && !_showActiveFlyState.started) {
+      positionShowActiveFly(fly, source);
+      _showActiveFlyState.source = source;
+    }
     const node = _nodeMap[xid];
     if (!node || node.x == null || node.y == null) {
-      payload._tries = (payload._tries || 0) + 1;
-      if (payload._tries > 20) return;
-      setTimeout(() => animateActiveWindowFromScreen(payload), 180);
+      _showActiveFlyState.tries += 1;
+      if (_showActiveFlyState.tries > 20) {
+        fly.transition().duration(180).style("opacity", 0).remove();
+        _showActiveFlyState = null;
+        return;
+      }
+      setTimeout(() => animateActiveWindowFromScreen(payload), 80);
       return;
     }
+    if (_showActiveFlyState.started) return;
+    if (!payload.stable_origin) return;
+    _showActiveFlyState.started = true;
 
-    const source = {
-      x: Number(payload.x) || 0,
-      y: Number(payload.y) || 0,
-      w: Math.max(1, Number(payload.w) || 1),
-      h: Math.max(1, Number(payload.h) || 1),
-    };
     const target = cardViewportRect(node);
     const duration = Math.max(100, Number(payload.duration_ms) || 650);
-    _overlay.selectAll(".show-active-fly").remove();
-
-    const fly = _overlay.append("g")
-      .attr("class", "show-active-fly")
-      .style("pointer-events", "none")
-      .style("opacity", 0.95);
-
-    fly.append("rect")
-      .attr("class", "show-active-fly-bg")
-      .attr("x", source.x)
-      .attr("y", source.y)
-      .attr("width", source.w)
-      .attr("height", source.h)
-      .attr("rx", 10);
-
     const thumbUrl = payload.thumb_url || node.thumb_url || "";
     if (thumbUrl) {
-      fly.append("image")
-        .attr("class", "show-active-fly-thumb")
+      fly.select(".show-active-fly-thumb")
         .attr("href", thumbUrl)
-        .attr("x", source.x)
-        .attr("y", source.y)
-        .attr("width", source.w)
-        .attr("height", source.h)
-        .attr("preserveAspectRatio", "xMidYMid slice");
+        .style("display", null);
     }
-
-    fly.append("rect")
-      .attr("class", "show-active-fly-border")
-      .attr("x", source.x)
-      .attr("y", source.y)
-      .attr("width", source.w)
-      .attr("height", source.h)
-      .attr("rx", 10);
 
     fly.selectAll("rect,image")
       .transition()
@@ -538,7 +518,64 @@
       .transition()
       .duration(180)
       .style("opacity", 0)
-      .remove();
+      .remove()
+      .on("end", () => { _showActiveFlyState = null; });
+  }
+
+  function ensureShowActiveFly(payload, source) {
+    if (_showActiveFlyState && _showActiveFlyState.xid === Number(payload.xid)) {
+      return _showActiveFlyState.fly;
+    }
+    _overlay.selectAll(".show-active-fly").remove();
+
+    const fly = _overlay.append("g")
+      .attr("class", "show-active-fly")
+      .style("pointer-events", "none")
+      .style("opacity", 0.95);
+
+    fly.append("rect")
+      .attr("class", "show-active-fly-bg")
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h)
+      .attr("rx", 10);
+
+    fly.append("image")
+      .attr("class", "show-active-fly-thumb")
+      .attr("href", payload.thumb_url || "")
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h)
+      .attr("preserveAspectRatio", "xMidYMid slice")
+      .style("display", payload.thumb_url ? null : "none");
+
+    fly.append("rect")
+      .attr("class", "show-active-fly-border")
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h)
+      .attr("rx", 10);
+
+    _showActiveFlyState = {
+      xid: Number(payload.xid),
+      fly,
+      source,
+      started: false,
+      tries: 0,
+    };
+    return fly;
+  }
+
+  function positionShowActiveFly(fly, source) {
+    fly.selectAll("rect,image")
+      .interrupt()
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h);
   }
 
   function cardViewportRect(node) {
@@ -550,6 +587,34 @@
       w: size.w * t.k,
       h: size.h * t.k,
     };
+  }
+
+  function sourceViewportRect(payload) {
+    if (payload.stable_origin) {
+      return {
+        x: Number(payload.x) || 0,
+        y: Number(payload.y) || 0,
+        w: Math.max(1, Number(payload.w) || 1),
+        h: Math.max(1, Number(payload.h) || 1),
+      };
+    }
+    const screenOrigin = currentViewportScreenOrigin();
+    return {
+      x: (Number(payload.screen_x) || 0) - screenOrigin.x,
+      y: (Number(payload.screen_y) || 0) - screenOrigin.y,
+      w: Math.max(1, Number(payload.w) || 1),
+      h: Math.max(1, Number(payload.h) || 1),
+    };
+  }
+
+  function currentViewportScreenOrigin() {
+    const sx = Number(window.screenX ?? window.screenLeft ?? 0);
+    const sy = Number(window.screenY ?? window.screenTop ?? 0);
+    const outerW = Number(window.outerWidth || window.innerWidth || 0);
+    const outerH = Number(window.outerHeight || window.innerHeight || 0);
+    const chromeX = Math.max(0, (outerW - window.innerWidth) / 2);
+    const chromeY = Math.max(0, outerH - window.innerHeight - chromeX);
+    return { x: sx + chromeX, y: sy + chromeY };
   }
 
   function graphSignature(data) {
