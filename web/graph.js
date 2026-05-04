@@ -190,12 +190,13 @@
     // Arrow marker for edges
     defs.append("marker")
       .attr("id", "arrowhead")
-      .attr("viewBox", "0 -4 10 8")
-      .attr("refX", 18).attr("refY", 0)
-      .attr("markerWidth", 6).attr("markerHeight", 6)
+      .attr("viewBox", "0 -5 12 10")
+      .attr("refX", 0).attr("refY", 0)
+      .attr("markerWidth", 12).attr("markerHeight", 10)
+      .attr("markerUnits", "userSpaceOnUse")
       .attr("orient", "auto")
       .append("path")
-        .attr("d", "M0,-4L10,0L0,4")
+        .attr("d", "M0,-5L12,0L0,5")
         .attr("fill", "#777");
 
     _zoom = d3.zoom()
@@ -929,6 +930,13 @@
     return [cx + dx * t, cy + dy * t];
   }
 
+  function pointBeforeTarget(x, y, fromX, fromY, distance) {
+    const dx = x - fromX, dy = y - fromY;
+    const len = Math.hypot(dx, dy);
+    if (!len) return [x, y];
+    return [x - (dx / len) * distance, y - (dy / len) * distance];
+  }
+
   function _linkPath(d) {
     const sx = d.source.x || 0, sy = d.source.y || 0;
     const tx = d.target.x || 0, ty = d.target.y || 0;
@@ -939,11 +947,13 @@
       const x2 = tx;
       const y2 = ty - ts.h / 2;
       const curve = Math.max(60, Math.min(220, Math.abs(y2 - y1) * 0.55));
-      return `M${x1},${y1}C${x1},${y1 + curve} ${x2},${y2 - curve} ${x2},${y2}`;
+      const [ex, ey] = pointBeforeTarget(x2, y2, x2, y2 - curve, 12);
+      return `M${x1},${y1}C${x1},${y1 + curve} ${x2},${y2 - curve} ${ex},${ey}`;
     }
     const [x1, y1] = rectEdgePoint(sx, sy, tx, ty, ss.w / 2, ss.h / 2);
     const [x2, y2] = rectEdgePoint(tx, ty, sx, sy, ts.w / 2, ts.h / 2);
-    return `M${x1},${y1}L${x2},${y2}`;
+    const [ex, ey] = pointBeforeTarget(x2, y2, x1, y1, 12);
+    return `M${x1},${y1}L${ex},${ey}`;
   }
 
   function ticked() {
