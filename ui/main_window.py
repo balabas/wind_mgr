@@ -29,19 +29,26 @@ WEB_DIR = Path(__file__).parent.parent / "web"
 INDEX_URI = (WEB_DIR / "index.html").as_uri()
 
 
-def _read_layout_config() -> dict:
-    cfg = read_config(raw=True, preserve_case=True)
-    layout: dict = {}
-    if not cfg.has_section("layout"):
-        return layout
-    for key, val in cfg.items("layout"):
+def _parse_config_section(cfg, section: str) -> dict:
+    result: dict = {}
+    if not cfg.has_section(section):
+        return result
+    for key, val in cfg.items(section):
         val = val.strip()
         try:
             f = float(val)
-            layout[key] = int(f) if f == int(f) else f
+            result[key] = int(f) if f == int(f) else f
         except ValueError:
-            layout[key] = val
-    return layout
+            result[key] = val
+    return result
+
+
+def _read_frontend_config() -> dict:
+    cfg = read_config(raw=True, preserve_case=True)
+    return {
+        "layout": _parse_config_section(cfg, "layout"),
+        "activation": _parse_config_section(cfg, "activation"),
+    }
 
 
 class MainWindow:
@@ -84,9 +91,9 @@ class MainWindow:
         self._webview = WebKit2.WebView()
         self._webview.set_settings(settings)
 
-        layout = _read_layout_config()
+        frontend_cfg = _read_frontend_config()
         config_js = (
-            "window.windMgrConfig=" + json.dumps({"layout": layout}) + ";"
+            "window.windMgrConfig=" + json.dumps(frontend_cfg) + ";"
             "window.windMgrConfigReady=Promise.resolve(window.windMgrConfig);"
         )
         ucm = self._webview.get_user_content_manager()

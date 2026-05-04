@@ -280,13 +280,6 @@
 
     document.getElementById("btn-refresh").addEventListener("click", () =>
       sendToBackend({ action: "refresh_all_thumbs" }));
-    const autoButton = document.getElementById("btn-auto");
-    setAutoThumbButtonState(autoButton, false);
-    autoButton.addEventListener("click", function () {
-      const enabled = !this.classList.contains("active");
-      setAutoThumbButtonState(this, enabled);
-      sendToBackend({ action: "toggle_auto_refresh", enabled });
-    });
     const raiseGroupButton = document.getElementById("btn-raise-group");
     setRaiseGroupButtonState(raiseGroupButton, defaultRaiseGroupOnActivate());
     raiseGroupButton.addEventListener("click", function () {
@@ -302,16 +295,6 @@
       window.windMgr.updateGraph(_pendingData);
       _pendingData = null;
     }
-  }
-
-  function setAutoThumbButtonState(button, enabled) {
-    button.classList.toggle("active", enabled);
-    button.querySelector(".toggle-box").textContent = enabled ? "☑" : "□";
-    button.querySelector(".toggle-text").textContent = enabled ? "Auto Thumbs: on" : "Auto Thumbs";
-    button.title = enabled
-      ? "On: automatically refreshes all thumbnails every 30 seconds"
-      : "Off: automatically refresh all thumbnails every 30 seconds";
-    button.setAttribute("aria-pressed", enabled ? "true" : "false");
   }
 
   function setRaiseGroupButtonState(button, enabled) {
