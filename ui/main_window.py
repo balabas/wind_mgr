@@ -274,6 +274,8 @@ class MainWindow:
                 self._visible,
             )
             GLib.timeout_add(120, self._ensure_maximized_visible_window, edge_context)
+            GLib.timeout_add(180, self._bridge.push_show_active_animation)
+            GLib.timeout_add(420, self._bridge.push_show_active_animation)
             if should_center_monitor:
                 GLib.timeout_add(350, self._center_visible_graph)
                 GLib.timeout_add(700, self._center_visible_graph)

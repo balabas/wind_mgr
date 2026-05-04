@@ -19,6 +19,23 @@ svg#graph {
   height: 100%;
 }
 
+.viewport-overlay {
+  pointer-events: none;
+}
+.show-active-fly-bg {
+  fill: rgba(15, 20, 38, 0.88);
+  stroke: none;
+}
+.show-active-fly-thumb {
+  opacity: 0.92;
+}
+.show-active-fly-border {
+  fill: none;
+  stroke: #00d4ff;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 10px rgba(0, 212, 255, 0.75));
+}
+
 /* Cluster hull */
 .cluster-hull {
   fill-opacity: 0.08;

@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260503-0035";
+  const GRAPH_VERSION = "20260504-0100";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -66,7 +66,7 @@
     };
   }
   let _simulation = null;
-  let _svg = null, _g = null, _zoom = null;
+  let _svg = null, _g = null, _overlay = null, _zoom = null;
   let _nodeMap = {};
   let _projectMap = {};
   let _selectedXid = null;
@@ -224,6 +224,7 @@
     _g.append("g").attr("class", "links-layer");
     _g.append("g").attr("class", "nodes-layer");
     _g.append("g").attr("class", "labels-layer");
+    _overlay = _svg.append("g").attr("class", "viewport-overlay");
 
     document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); });
     window.addEventListener("keydown", onKeyDown);
@@ -373,6 +374,10 @@
       updateThumbnails(items);
     },
 
+    animateActiveWindowFromScreen(payload) {
+      animateActiveWindowFromScreen(payload);
+    },
+
     highlightNode(xid) {
       const g = d3.select(`[data-xid="${xid}"]`);
       g.classed("pulse", false);
@@ -460,6 +465,91 @@
         return d.xid === _data.active_xid
           && d3.select(this).classed("active-window-new");
       });
+  }
+
+  function animateActiveWindowFromScreen(payload) {
+    if (!_overlay || !payload) return;
+    const xid = Number(payload.xid);
+    const node = _nodeMap[xid];
+    if (!node || node.x == null || node.y == null) {
+      payload._tries = (payload._tries || 0) + 1;
+      if (payload._tries > 20) return;
+      setTimeout(() => animateActiveWindowFromScreen(payload), 180);
+      return;
+    }
+
+    const source = {
+      x: Number(payload.x) || 0,
+      y: Number(payload.y) || 0,
+      w: Math.max(1, Number(payload.w) || 1),
+      h: Math.max(1, Number(payload.h) || 1),
+    };
+    const target = cardViewportRect(node);
+    const duration = Math.max(100, Number(payload.duration_ms) || 650);
+    _overlay.selectAll(".show-active-fly").remove();
+
+    const fly = _overlay.append("g")
+      .attr("class", "show-active-fly")
+      .style("pointer-events", "none")
+      .style("opacity", 0.95);
+
+    fly.append("rect")
+      .attr("class", "show-active-fly-bg")
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h)
+      .attr("rx", 10);
+
+    const thumbUrl = payload.thumb_url || node.thumb_url || "";
+    if (thumbUrl) {
+      fly.append("image")
+        .attr("class", "show-active-fly-thumb")
+        .attr("href", thumbUrl)
+        .attr("x", source.x)
+        .attr("y", source.y)
+        .attr("width", source.w)
+        .attr("height", source.h)
+        .attr("preserveAspectRatio", "xMidYMid slice");
+    }
+
+    fly.append("rect")
+      .attr("class", "show-active-fly-border")
+      .attr("x", source.x)
+      .attr("y", source.y)
+      .attr("width", source.w)
+      .attr("height", source.h)
+      .attr("rx", 10);
+
+    fly.selectAll("rect,image")
+      .transition()
+      .duration(duration)
+      .ease(d3.easeCubicOut)
+      .attr("x", target.x)
+      .attr("y", target.y)
+      .attr("width", target.w)
+      .attr("height", target.h)
+      .attr("rx", 8);
+
+    fly.transition()
+      .duration(duration)
+      .ease(d3.easeCubicOut)
+      .style("opacity", 1)
+      .transition()
+      .duration(180)
+      .style("opacity", 0)
+      .remove();
+  }
+
+  function cardViewportRect(node) {
+    const size = cardSize(node);
+    const t = _currentZoomTransform || d3.zoomIdentity;
+    return {
+      x: (Number(node.x) - size.w / 2) * t.k + t.x,
+      y: (Number(node.y) - size.h / 2) * t.k + t.y,
+      w: size.w * t.k,
+      h: size.h * t.k,
+    };
   }
 
   function graphSignature(data) {

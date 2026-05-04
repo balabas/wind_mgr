@@ -66,6 +66,7 @@ class JSBridge:
         self._hover_refresh_ms = 2000
         self._hovered_xid: int | None = None
         self._hover_refresh_tag: int | None = None
+        self._pending_show_animation: dict[str, Any] | None = None
         self._js_msg_count = 0
         self._js_msg_rate_t0 = time.monotonic()
         self._cpu_probe_last_wall: float | None = None
@@ -132,6 +133,15 @@ class JSBridge:
             "raise_same_geometry_method",
             fallback="restack",
         ).strip().lower()
+        self._active_window_show_animation = cfg.getboolean(
+            "activation",
+            "active_window_show_animation",
+            fallback=True,
+        )
+        self._active_window_show_animation_ms = max(
+            100,
+            int(cfg.getfloat("activation", "active_window_show_animation_ms", fallback=650)),
+        )
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
         bus.subscribe(EVT_WINDOW_OPENED, self._on_window_opened)
@@ -142,6 +152,8 @@ class JSBridge:
 
     def set_ui_visible(self, visible: bool) -> None:
         self._ui_visible = visible
+        if visible:
+            self._capture_show_animation_source()
         if self._webview is not None:
             suspended = str(not visible).lower()
             js = f"try{{if(window.windMgr)window.windMgr.setSuspended({suspended});}}catch(e){{}}"
@@ -158,6 +170,65 @@ class JSBridge:
             log.info("ui hidden: suspended graph; active/hover refresh paused, background refresh continues")
         else:
             log.info("ui visible: graph and thumbnail refresh enabled")
+
+    def push_show_active_animation(self) -> bool:
+        if self._webview is None or not self._pending_show_animation:
+            return False
+        payload = dict(self._pending_show_animation)
+        origin_x, origin_y = self._webview_screen_origin()
+        payload["x"] = payload["screen_x"] - origin_x
+        payload["y"] = payload["screen_y"] - origin_y
+        payload["duration_ms"] = self._active_window_show_animation_ms
+        js = (
+            "(function(payload){"
+            "function run(){"
+            "try{"
+            "if(window.windMgr&&window.windMgr.animateActiveWindowFromScreen){"
+            "window.windMgr.animateActiveWindowFromScreen(payload);"
+            "}else{setTimeout(run,120);}"
+            "}catch(e){console.error('animateActiveWindowFromScreen error:',e.toString(),e.stack);}"
+            "}"
+            "run();"
+            f"}})({json.dumps(payload)});"
+        )
+        self._webview.evaluate_javascript(js, -1, None, None, None, self._js_done_cb, None)
+        log.debug("show active animation payload=%s origin=%s,%s", payload, origin_x, origin_y)
+        self._pending_show_animation = None
+        return False
+
+    def _capture_show_animation_source(self) -> None:
+        self._pending_show_animation = None
+        if not self._active_window_show_animation:
+            return
+        try:
+            gi.require_version("Wnck", "3.0")
+            from gi.repository import Wnck
+            screen = Wnck.Screen.get_default()
+            if screen is None:
+                return
+            screen.force_update()
+            active_xid = self._active_window_xid(allow_fallback=True)
+            if active_xid is None:
+                return
+            record = self._reg.get(int(active_xid))
+            if record is None or _is_self_record(record):
+                return
+            for window in screen.get_windows():
+                if int(window.get_xid()) != int(active_xid):
+                    continue
+                x, y, width, height = window.get_geometry()
+                self._pending_show_animation = {
+                    "xid": int(active_xid),
+                    "screen_x": int(x),
+                    "screen_y": int(y),
+                    "w": int(width),
+                    "h": int(height),
+                    "thumb_url": self._capture.thumb_url(int(active_xid)),
+                }
+                log.debug("captured show active animation source=%s", self._pending_show_animation)
+                return
+        except Exception:
+            log.debug("failed to capture show active animation source", exc_info=True)
 
     def attach(self, webview: WebKit2.WebView) -> None:
         self._webview = webview
