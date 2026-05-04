@@ -1,6 +1,6 @@
 #!/bin/bash
 # wind_mgr launcher — strips VS Code snap library overrides before starting.
-# Run this from any terminal: bash ~/Documents/projects/wind_mgr/wind_mgr.sh
+# Run this from any terminal: bash ./wind_mgr.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

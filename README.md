@@ -38,6 +38,9 @@ python3 -m pip install -r requirements.txt
 
 `python3-xlib` is optional and only used as a fallback global-hotkey backend if Keybinder is unavailable.
 
+The committed `config.ini` is the default app config. If behavior depends on a
+setting, commit the matching `config.ini` change with the code change.
+
 ## Run
 
 Preferred launcher:
@@ -60,7 +63,12 @@ python3 main.py
 
 ## Configuration
 
-Main settings are in `config.ini`.
+Main settings are in `config.ini`. This file is tracked because many geometry,
+capture, and interaction parameters are part of the app behavior.
+
+Use optional `config.user.ini` for private local overrides. It is ignored by Git
+and is loaded after `config.ini`, so values there replace the committed defaults
+without changing the distribution config.
 
 Startup settings:
 
@@ -97,6 +105,23 @@ Important layout settings:
 - Context menu on card/link: window actions and relationship actions.
 - Configured hotkey: see `hotkey` in `config.ini`.
 
+## Autostart
+
+Create `~/.config/autostart/wind_mgr.desktop`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=wind_mgr
+Comment=Window graph manager
+Exec=bash -lc 'cd /path/to/wind_mgr && ./wind_mgr.sh'
+Terminal=false
+X-GNOME-Autostart-enabled=true
+```
+
+Set `start_hidden = true` in `config.ini` if this should be the default for the
+repo. For only your local machine, put the same setting in `config.user.ini`.
+
 ## Architecture
 
 - `main.py`: app wiring, registry, watcher, providers, UI startup.
@@ -111,3 +136,7 @@ Important layout settings:
 ## Notes
 
 This project targets X11. XComposite/GLX-based preview and some Wnck behavior are not expected to work the same way on Wayland.
+
+## License
+
+MIT. See `LICENSE`.

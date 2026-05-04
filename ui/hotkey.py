@@ -3,11 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-import configparser
-from pathlib import Path
-_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
-cfg = configparser.ConfigParser()
-cfg.read(_CONFIG_PATH)
+from core.config import read_config
+cfg = read_config()
 _HOTKEY = cfg.get("capture", "hotkey", fallback="<Super>e")
 
 log = logging.getLogger(__name__)

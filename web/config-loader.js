@@ -1,29 +1,42 @@
 (function () {
   "use strict";
 
-  // If Python already injected the config via UserScript, use it directly.
+  // Python may inject a narrowed runtime config into WebKit before this file loads.
   if (window.windMgrConfigReady) return;
 
   window.windMgrConfig = {};
-  window.windMgrConfigReady = fetch("../config.ini", { cache: "no-store" })
-    .then(response => {
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      return response.text();
-    })
-    .then(text => {
-      window.windMgrConfig = parseIni(text);
+  window.windMgrConfigReady = Promise.all([
+    fetchConfig("../config.ini"),
+    fetchConfig("../config.user.ini"),
+  ])
+    .then(([defaultText, userText]) => mergeConfig(parseIni(defaultText), parseIni(userText)))
+    .then(config => {
+      window.windMgrConfig = config;
       return window.windMgrConfig;
     })
     .catch(error => {
-      console.warn("Failed to load ../config.ini; using built-in defaults", error);
+      console.warn("Failed to load config file; using built-in defaults", error);
       window.windMgrConfig = {};
       return window.windMgrConfig;
     });
 
+  function mergeConfig(base, override) {
+    const merged = Object.assign({}, base || {});
+    Object.entries(override || {}).forEach(([section, values]) => {
+      merged[section] = Object.assign({}, merged[section] || {}, values || {});
+    });
+    return merged;
+  }
+
+  function fetchConfig(path) {
+    return fetch(path, { cache: "no-store" })
+      .then(response => response.ok ? response.text() : "");
+  }
+
   function parseIni(text) {
     const config = {};
     let section = null;
-    text.split(/\r?\n/).forEach(line => {
+    String(text || "").split(/\r?\n/).forEach(line => {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return;
       const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/);

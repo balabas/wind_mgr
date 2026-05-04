@@ -2,10 +2,8 @@
 """wind_mgr — window manager companion with graph UI."""
 from __future__ import annotations
 import argparse
-import configparser
 import logging
 import sys
-from pathlib import Path
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -13,6 +11,7 @@ gi.require_version("Wnck", "3.0")
 from gi.repository import Gtk, GLib, Wnck
 
 from core.events import bus, EVT_WINDOW_OPENED, EVT_TITLE_CHANGED
+from core.config import read_config
 from core.window_registry import WindowRegistry
 from core.activity_watcher import ActivityWatcher
 from core.relationship import RelationshipTree
@@ -30,7 +29,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("wind_mgr")
-CONFIG_PATH = Path(__file__).parent / "config.ini"
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -51,8 +49,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def _read_start_hidden_config() -> bool:
-    cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_PATH)
+    cfg = read_config()
     return cfg.getboolean("startup", "start_hidden", fallback=False)
 
 

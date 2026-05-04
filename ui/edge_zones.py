@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import configparser
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 import gi
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib
+from core.config import read_config
 
 log = logging.getLogger(__name__)
-
-CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
-
 
 @dataclass
 class EdgeZoneConfig:
@@ -182,8 +178,7 @@ class EdgeZoneWatcher:
 
 
 def read_edge_zone_config() -> EdgeZoneConfig:
-    cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_PATH)
+    cfg = read_config()
     section = "edge_zones"
     return EdgeZoneConfig(
         enabled=cfg.getboolean(section, "enabled", fallback=False),

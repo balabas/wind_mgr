@@ -87,21 +87,29 @@ class RelationshipTree:
             pid = self.get_project_id(record)
             if pid not in seen:
                 name = ""
+                members = self.get_project_records(pid)
+                custom_name = next(
+                    (r.metadata.get("custom_project_name") for r in members
+                     if r.metadata.get("custom_project_name")),
+                    "",
+                )
                 if ":solo" in pid:
                     solo_xid_str = pid.split(":")[0]
                     r = self._reg.get(int(solo_xid_str)) if solo_xid_str.isdigit() else None
                     if r:
-                        name = (r.metadata.get("project_name")
+                        name = (custom_name
                                 or r.metadata.get("domain")
                                 or r.app_name
                                 or (r.title[:20] if r.title else ""))
                 else:
                     root = self._reg.get(int(pid)) if pid.isdigit() else None
                     if root:
-                        name = (root.metadata.get("project_name")
+                        name = (custom_name
                                 or root.metadata.get("domain")
                                 or root.app_name
                                 or root.title[:20])
+                    else:
+                        name = custom_name
                 seen[pid] = {
                     "id": pid,
                     "name": name or f"project-{pid[-4:]}",

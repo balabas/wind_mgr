@@ -1,5 +1,4 @@
 from __future__ import annotations
-import configparser
 import logging
 import os
 import subprocess
@@ -15,13 +14,13 @@ gi.require_version("GdkX11", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Wnck", "3.0")
 from gi.repository import Gdk, GdkX11, GdkPixbuf, GLib, Wnck
+from core.config import read_config
 
 log = logging.getLogger(__name__)
 
 DEFAULT_THUMB_W = 720
 DEFAULT_THUMB_H = 450
 DEFAULT_ICON_SIZE = 64
-CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
 THUMBS_DIR = Path.home() / ".local" / "share" / "wind_mgr" / "thumbs"
 ICONS_DIR  = Path.home() / ".local" / "share" / "wind_mgr" / "icons"
 
@@ -38,12 +37,8 @@ class ScreenshotCapture:
         self._load_config()
 
     def _load_config(self) -> None:
-        if not CONFIG_PATH.exists():
-            return
         try:
-            parser = configparser.ConfigParser()
-            parser.optionxform = str
-            parser.read(CONFIG_PATH)
+            parser = read_config(preserve_case=True)
             cfg = parser["capture"] if parser.has_section("capture") else {}
             self._thumb_w = _positive_int(cfg.get("thumb_width"), DEFAULT_THUMB_W)
             self._thumb_h = _positive_int(cfg.get("thumb_height"), DEFAULT_THUMB_H)
@@ -51,7 +46,7 @@ class ScreenshotCapture:
             log.info("Capture config: thumbnails=%dx%d icons=%d",
                      self._thumb_w, self._thumb_h, self._icon_size)
         except Exception:
-            log.warning("Failed to load capture config from %s", CONFIG_PATH, exc_info=True)
+            log.warning("Failed to load capture config", exc_info=True)
 
     def _get_display(self) -> GdkX11.X11Display:
         if self._display is None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from collections import OrderedDict
-import configparser
 import json
 import logging
 import os
@@ -13,6 +12,7 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, WebKit2
 
 from core.activity_stats import ActivityStats
+from core.config import read_config
 from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED, EVT_WINDOW_CLOSED, EVT_WINDOW_OPENED
 from core.relationship import RelationshipTree
 
@@ -21,9 +21,6 @@ if TYPE_CHECKING:
     from capture.screenshot import ScreenshotCapture
 
 log = logging.getLogger(__name__)
-_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
-
-
 class JSBridge:
     def __init__(self, registry: "WindowRegistry", tree: RelationshipTree,
                  capture: "ScreenshotCapture") -> None:
@@ -75,8 +72,7 @@ class JSBridge:
         self._cpu_probe_last_proc: float | None = None
         self._cpu_probe_last_threads: dict[int, float] = {}
 
-        cfg = configparser.ConfigParser()
-        cfg.read(_CONFIG_PATH)
+        cfg = read_config()
         self._graph_push_min_ms = max(
             250,
             int(cfg.getfloat("capture", "graph_push_min_interval", fallback=3.0) * 1000),
@@ -126,6 +122,16 @@ class JSBridge:
             250,
             int(cfg.getfloat("capture", "hover_refresh_interval", fallback=0.5) * 1000),
         )
+        self._raise_same_geometry_on_card_activate = cfg.getboolean(
+            "activation",
+            "raise_same_geometry_on_card_activate",
+            fallback=False,
+        )
+        self._raise_same_geometry_method = cfg.get(
+            "activation",
+            "raise_same_geometry_method",
+            fallback="restack",
+        ).strip().lower()
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
         bus.subscribe(EVT_WINDOW_OPENED, self._on_window_opened)
@@ -535,25 +541,107 @@ class JSBridge:
         from ui.window_flash import flash_window_rect
         screen = Wnck.Screen.get_default()
         screen.force_update()
-        for w in screen.get_windows():
-            if w.get_xid() == xid:
-                log.info(
-                    "activate matched xid=%s wnck_name=%r app=%r",
-                    xid,
-                    w.get_name(),
-                    w.get_application().get_name() if w.get_application() else "",
-                )
-                if self._before_activate_cb is not None:
-                    self._before_activate_cb()
-                ts = Gtk.get_current_event_time()
-                if not ts:
-                    # Wnck expects a 32-bit X timestamp, not Unix epoch time.
-                    ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
-                w.activate(ts)
-                x, y, width, height = w.get_geometry()
+        windows_by_xid = {int(w.get_xid()): w for w in screen.get_windows()}
+        target = windows_by_xid.get(int(xid))
+        if target is not None:
+            log.info(
+                "activate matched xid=%s wnck_name=%r app=%r",
+                xid,
+                target.get_name(),
+                target.get_application().get_name() if target.get_application() else "",
+            )
+            if self._before_activate_cb is not None:
+                self._before_activate_cb()
+            ts = Gtk.get_current_event_time()
+            if not ts:
+                # Wnck expects a 32-bit X timestamp, not Unix epoch time.
+                ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
+            if self._raise_same_geometry_on_card_activate:
+                self._raise_same_geometry_then_activate(int(xid), windows_by_xid, int(ts))
+            else:
+                target.activate(ts)
+                x, y, width, height = target.get_geometry()
                 GLib.timeout_add(140, flash_window_rect, x, y, width, height)
-                return
+            return
         log.warning("activate: window xid=%d not found", xid)
+
+    def _raise_same_geometry_then_activate(self, xid: int, windows_by_xid: dict[int, Any], ts: int) -> None:
+        record = self._reg.get(xid)
+        target = windows_by_xid.get(xid)
+        if record is None or target is None:
+            if target is not None:
+                target.activate(ts)
+            return
+
+        project_id = self._tree.get_project_id(record)
+        same_geometry_records = [
+            r for r in self._reg.all_alive()
+            if r.xid != xid and self._tree.get_project_id(r) == project_id and r.xid in windows_by_xid
+        ]
+        same_geometry_records.sort(key=lambda r: (r.last_focused_at, r.xid))
+        raise_xids = [r.xid for r in same_geometry_records]
+        log.info(
+            "activate same geometry: selected=%s project=%s method=%s raise=%s",
+            xid,
+            project_id,
+            self._raise_same_geometry_method,
+            raise_xids,
+        )
+
+        if self._raise_same_geometry_method == "activate":
+            for window_xid in raise_xids:
+                window = windows_by_xid.get(window_xid)
+                if window is not None:
+                    self._activate_wnck_window(window, ts, flash=False)
+        else:
+            self._restack_x11_windows(raise_xids)
+
+        # Selected window is activated last, so it should finish focused/topmost.
+        self._activate_wnck_window(target, ts, flash=True)
+
+    def _activate_wnck_window(self, window: Any, ts: int, *, flash: bool) -> None:
+        try:
+            if window.is_minimized():
+                window.unminimize(ts)
+            window.activate(ts)
+            if flash:
+                x, y, width, height = window.get_geometry()
+                from ui.window_flash import flash_window_rect
+                GLib.timeout_add(140, flash_window_rect, x, y, width, height)
+        except Exception:
+            log.debug("activate window failed xid=%s", window.get_xid(), exc_info=True)
+
+    def _restack_x11_windows(self, xids: list[int]) -> None:
+        if not xids:
+            return
+        try:
+            from Xlib import X, display, protocol
+            dpy = display.Display()
+            root = dpy.screen().root
+            net_restack = dpy.intern_atom("_NET_RESTACK_WINDOW")
+            source_application = 1
+
+            for xid in xids:
+                win = dpy.create_resource_object("window", int(xid))
+                event = protocol.event.ClientMessage(
+                    window=win,
+                    client_type=net_restack,
+                    data=(32, [source_application, 0, X.Above, 0, 0]),
+                )
+                root.send_event(
+                    event,
+                    event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask,
+                )
+                # Some WMs ignore _NET_RESTACK_WINDOW; direct configure is a
+                # harmless fallback when the WM allows client restacking.
+                try:
+                    win.configure(stack_mode=X.Above)
+                except Exception:
+                    log.debug("XRaise fallback failed xid=%s", xid, exc_info=True)
+            dpy.sync()
+            dpy.close()
+        except Exception:
+            log.debug("X11 restack failed xids=%s", xids, exc_info=True)
 
     def _place_window(self, xid: int, placement: str) -> None:
         import gi
@@ -1158,13 +1246,36 @@ class JSBridge:
         self._live_preview_xid = None
 
     def _rename_project(self, project_id: str, name: str) -> None:
-        # Store custom name in registry as metadata on root record
+        project_id = str(project_id)
+        name = str(name).strip()
+        if not name:
+            return
+
+        # Project ids may be numeric roots, :solo synthetic ids, or explicit
+        # manual ids. Keep user labels separate from provider project_name,
+        # because VSCode/PyCharm providers refresh that field from window title.
+        renamed = []
+        for record in self._reg.all_records():
+            if not record.is_alive:
+                continue
+            if self._tree.get_project_id(record) == project_id:
+                record.metadata["custom_project_name"] = name
+                renamed.append(record.xid)
+
         if project_id.isdigit():
-            record = self._reg.get(int(project_id))
-            if record:
-                record.metadata["project_name"] = name
-                self._reg.save()
-                self.push_graph()
+            root = self._reg.get(int(project_id))
+            if root is not None:
+                root.metadata["custom_project_name"] = name
+                if root.xid not in renamed:
+                    renamed.append(root.xid)
+
+        if not renamed:
+            log.warning("rename_project: no records matched project_id=%s name=%r", project_id, name)
+            return
+
+        log.info("rename_project: project_id=%s name=%r records=%s", project_id, name, renamed)
+        self._reg.save()
+        self.push_graph()
 
     def _refresh_all_thumbs(self) -> None:
         records = [r for r in self._reg.all_alive() if not _is_self_record(r)]

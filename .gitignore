@@ -1,1 +1,35 @@
-*.pyc
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local env
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local app config overrides and runtime data
+config.user.ini
+*.log
+stack.tmp.txt
+*.recording
+Recording*.recording
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/

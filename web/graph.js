@@ -841,11 +841,22 @@
 
     const labels = _g.select(".labels-layer")
       .selectAll(".cluster-label").data(hullData, d => d.pid);
-    const labelsEnter = labels.enter().append("text").attr("class", "cluster-label");
+    const labelsEnter = labels.enter().append("text").attr("class", "cluster-label")
+      .on("dblclick", (e, d) => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameProject(d.pid);
+      })
+      .on("contextmenu", (e, d) => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameProject(d.pid);
+      });
     labelsEnter.merge(labels)
       .attr("x", d => d.cx).attr("y", d => d.labelY)
       .attr("text-anchor", "middle")
       .attr("fill", d => d.proj.color)
+      .attr("title", "Double-click to rename")
       .text(d => d.proj.name);
 
     hulls.exit().remove();
@@ -1816,15 +1827,20 @@
       sendToBackend({ action: "place_window", xid: _ctxNode.xid, placement: action.slice("place_".length) });
     } else if (action === "refresh_thumb") {
       sendToBackend({ action: "refresh_thumb", xid: _ctxNode.xid });
-    } else if (action === "rename_project") {
-      const name = prompt("New project name:", _projectMap[_ctxNode.project_id]?.name || "");
-      if (name) sendToBackend({ action: "rename_project", project_id: _ctxNode.project_id, name });
     } else if (action === "detach") {
       sendToBackend({ action: "remove_link", xid: _ctxNode.xid });
     } else if (action === "unlink_children") {
       sendToBackend({ action: "unlink_children", xid: _ctxNode.xid });
     }
     hideContextMenu();
+  }
+
+  function renameProject(projectId) {
+    const current = _projectMap[projectId]?.name || "";
+    const name = prompt("New project name:", current);
+    if (name && name !== current) {
+      sendToBackend({ action: "rename_project", project_id: projectId, name });
+    }
   }
 
   // ── Status ────────────────────────────────────────────────────────────────

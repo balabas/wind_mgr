@@ -41,7 +41,8 @@ svg#graph {
   letter-spacing: 0.5px;
   text-transform: uppercase;
   opacity: 0.95;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: text;
   paint-order: stroke;
   stroke: rgba(15,15,35,0.95);
   stroke-width: 5px;

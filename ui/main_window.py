@@ -1,5 +1,4 @@
 from __future__ import annotations
-import configparser
 import json
 import logging
 from pathlib import Path
@@ -12,11 +11,8 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gdk, WebKit2, GLib
 from gi.repository import AyatanaAppIndicator3 as AppIndicator3
 from pynput import keyboard
-import configparser
-from pathlib import Path
-_CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
-cfg = configparser.ConfigParser()
-cfg.read(_CONFIG_PATH)
+from core.config import read_config
+cfg = read_config()
 _HOTKEY = str(cfg.get("capture", "hotkey"))
 
 print("Configured hotkey:", [_HOTKEY])
@@ -30,14 +26,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent.parent / "web"
-CONFIG_PATH = Path(__file__).parent.parent / "config.ini"
 INDEX_URI = (WEB_DIR / "index.html").as_uri()
 
 
 def _read_layout_config() -> dict:
-    cfg = configparser.RawConfigParser()
-    cfg.optionxform = str  # preserve camelCase keys
-    cfg.read(CONFIG_PATH)
+    cfg = read_config(raw=True, preserve_case=True)
     layout: dict = {}
     if not cfg.has_section("layout"):
         return layout
