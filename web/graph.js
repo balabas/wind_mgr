@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260504-0180";
+  const GRAPH_VERSION = "20260504-0260";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -105,6 +105,8 @@
   let _lastLivePreviewSentAt = 0;
   let _showActiveFlyState = null;
   let _linkRouteOffsets = {};
+  let _currentLinkData = [];
+  let _prelayoutInitializedProjects = new Set();
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -154,8 +156,14 @@
     hierarchyGap: 260,
     hierarchyStrength: 1.15,
     hierarchySiblingSpread: 320,
+    hierarchyPrelayoutEnabled: true,
     hierarchyBranchStrength: 0.45,
-    linkCurveSpread: 70,
+    hierarchyOrderStrength: 0.16,
+    hierarchyCrossingStrength: 0.28,
+    linkCurveSpread: 110,
+    linkCardAvoidanceMargin: 40,
+    linkCardAvoidanceStrength: 0.34,
+    linkCardAvoidanceSamples: 10,
     clickMoveTolerancePx: 8,
     clickHoldTimeoutMs: 250,
     zoomWheelSensitivity: 0.002,
@@ -755,6 +763,14 @@
       }
       n.vx = 0; n.vy = 0;
     });
+    if (topologyChanged && !_dragActive && LAYOUT.hierarchyPrelayoutEnabled !== false) {
+      const projectIds = Array.from(new Set(nodes.map(n => n.project_id)));
+      const uninitialized = new Set(projectIds.filter(pid => !_prelayoutInitializedProjects.has(pid)));
+      if (uninitialized.size) {
+        applyHierarchyPrelayout(nodes, edges, xidToNode, uninitialized);
+      }
+      projectIds.forEach(pid => _prelayoutInitializedProjects.add(pid));
+    }
     ensureInitialViewCenterTarget(nodes);
 
     // ── Nodes DOM ───────────────────────────────────────────────────────
@@ -819,6 +835,7 @@
     const linkData = edges
       .map(e => ({ source: xidToNode[e.source], target: xidToNode[e.target] }))
       .filter(e => e.source && e.target);
+    _currentLinkData = linkData;
     _linkRouteOffsets = computeLinkRouteOffsets(linkData);
 
     // ── Edges ───────────────────────────────────────────────────────────
@@ -853,6 +870,7 @@
       .force("projectX", d3.forceX(d => (_projectAnchors[d.project_id] || {}).x || window.innerWidth / 2).strength(LAYOUT.projectAnchorStrength))
       .force("projectY", d3.forceY(d => (_projectAnchors[d.project_id] || {}).y || window.innerHeight / 2).strength(LAYOUT.projectAnchorStrength))
       .force("hierarchy", forceHierarchy(linkData))
+      .force("linkCardAvoidance", forceLinkCardAvoidance(nodes, linkData))
       .velocityDecay(LAYOUT.velocityDecay)
       .alphaDecay(LAYOUT.alphaDecay)
       .on("tick", ticked);
@@ -1025,26 +1043,63 @@
   }
 
   function _linkPath(d) {
+    const pts = linkPolyline(d, 1);
+    if (!pts.length) return "";
+    if (pts.length === 2) {
+      const [x1, y1] = pts[0];
+      const [x2, y2] = pointBeforeTarget(pts[1][0], pts[1][1], x1, y1, 12);
+      return `M${x1},${y1}L${x2},${y2}`;
+    }
+    const [x1, y1] = pts[0];
+    const [c1x, c1y] = pts[1];
+    const [c2x, c2y] = pts[2];
+    const [tx, ty] = pts[3];
+    const [ex, ey] = pointBeforeTarget(tx, ty, c2x, c2y, 12);
+    return `M${x1},${y1}C${c1x},${c1y} ${c2x},${c2y} ${ex},${ey}`;
+  }
+
+  function linkPolyline(d, samples) {
     const sx = d.source.x || 0, sy = d.source.y || 0;
     const tx = d.target.x || 0, ty = d.target.y || 0;
     const ss = cardSize(d.source), ts = cardSize(d.target);
     if (d.source.project_id === d.target.project_id) {
       const route = _linkRouteOffsets[`${d.source.xid}-${d.target.xid}`] || { offset: 0 };
-      const sourceOffset = Math.max(-ss.w * 0.35, Math.min(ss.w * 0.35, route.offset * 0.35));
+      const sourceOffset = Math.max(-ss.w * 0.48, Math.min(ss.w * 0.48, route.offset * 0.65));
       const x1 = sx + sourceOffset;
       const y1 = sy + ss.h / 2;
       const x2 = tx;
       const y2 = ty - ts.h / 2;
       const curve = Math.max(60, Math.min(220, Math.abs(y2 - y1) * 0.55));
-      const c1x = x1 + route.offset * 0.25;
-      const c2x = x2 + route.offset;
-      const [ex, ey] = pointBeforeTarget(x2, y2, c2x, y2 - curve, 12);
-      return `M${x1},${y1}C${c1x},${y1 + curve} ${c2x},${y2 - curve} ${ex},${ey}`;
+      // Keep lane separation near the parent, but make the final segment
+      // vertical so the arrowhead points into the target card instead of
+      // sideways.
+      const c1x = x1 + route.offset * 0.75;
+      const c2x = x2;
+      const c1 = [c1x, y1 + curve];
+      const c2 = [c2x, y2 - curve];
+      const end = [x2, y2];
+      if (samples <= 1) return [[x1, y1], c1, c2, end];
+      const pts = [];
+      for (let i = 0; i <= samples; i++) {
+        pts.push(cubicPoint([x1, y1], c1, c2, end, i / samples));
+      }
+      return pts;
     }
     const [x1, y1] = rectEdgePoint(sx, sy, tx, ty, ss.w / 2, ss.h / 2);
     const [x2, y2] = rectEdgePoint(tx, ty, sx, sy, ts.w / 2, ts.h / 2);
-    const [ex, ey] = pointBeforeTarget(x2, y2, x1, y1, 12);
-    return `M${x1},${y1}L${ex},${ey}`;
+    return [[x1, y1], [x2, y2]];
+  }
+
+  function cubicPoint(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    const a = mt * mt * mt;
+    const b = 3 * mt * mt * t;
+    const c = 3 * mt * t * t;
+    const d = t * t * t;
+    return [
+      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ];
   }
 
   function computeLinkRouteOffsets(linkData) {
@@ -1060,7 +1115,7 @@
     byParent.forEach(links => {
       links
         .slice()
-        .sort((a, b) => String(a.target.xid).localeCompare(String(b.target.xid)))
+        .sort((a, b) => ((a.target.x || 0) - (b.target.x || 0)) || String(a.target.xid).localeCompare(String(b.target.xid)))
         .forEach((link, i, arr) => {
           const rank = i - (arr.length - 1) / 2;
           offsets[`${link.source.xid}-${link.target.xid}`] = {
@@ -1079,6 +1134,7 @@
   }
 
   function renderLinksOnly() {
+    _linkRouteOffsets = computeLinkRouteOffsets(_currentLinkData);
     _g.select(".links-layer").selectAll(".link").attr("d", _linkPath);
     _g.select(".links-layer").selectAll(".link-hit").attr("d", _linkPath);
   }
@@ -1231,11 +1287,91 @@
     return anchors;
   }
 
+  function applyHierarchyPrelayout(nodes, edges, xidToNode, projectFilter = null) {
+    const gapX = LAYOUT.hierarchySiblingSpread != null ? LAYOUT.hierarchySiblingSpread : 260;
+    const gapY = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 220;
+    const projectGroups = new Map();
+    nodes.forEach(n => {
+      if (!projectGroups.has(n.project_id)) projectGroups.set(n.project_id, []);
+      projectGroups.get(n.project_id).push(n);
+    });
+
+    projectGroups.forEach((projectNodes, projectId) => {
+      if (projectFilter && !projectFilter.has(projectId)) return;
+      const childMap = new Map();
+      const hasParent = new Set();
+      edges.forEach(e => {
+        const source = xidToNode[e.source];
+        const target = xidToNode[e.target];
+        if (!source || !target) return;
+        if (source.project_id !== projectId || target.project_id !== projectId) return;
+        if (!childMap.has(source.xid)) childMap.set(source.xid, []);
+        childMap.get(source.xid).push(target);
+        hasParent.add(target.xid);
+      });
+
+      const roots = projectNodes
+        .filter(n => !hasParent.has(n.xid))
+        .sort((a, b) => ((a.x || 0) - (b.x || 0)) || String(a.xid).localeCompare(String(b.xid)));
+      if (!roots.length) return;
+
+      const widthMemo = new Map();
+      function childrenOf(node) {
+        return (childMap.get(node.xid) || [])
+          .slice()
+          .sort((a, b) => ((a.x || 0) - (b.x || 0)) || String(a.xid).localeCompare(String(b.xid)));
+      }
+      function subtreeWidth(node, seen = new Set()) {
+        if (seen.has(node.xid)) return gapX;
+        if (widthMemo.has(node.xid)) return widthMemo.get(node.xid);
+        seen.add(node.xid);
+        const children = childrenOf(node);
+        const own = Math.max(cardSize(node).w + gapX * 0.4, gapX);
+        const childWidth = children.length
+          ? children.reduce((sum, child) => sum + subtreeWidth(child, new Set(seen)), 0) + gapX * 0.35 * (children.length - 1)
+          : 0;
+        const width = Math.max(own, childWidth);
+        widthMemo.set(node.xid, width);
+        return width;
+      }
+      function place(node, x, y, seen = new Set()) {
+        if (seen.has(node.xid)) return;
+        seen.add(node.xid);
+        node.x = x;
+        node.y = y;
+        node.vx = 0;
+        node.vy = 0;
+        const children = childrenOf(node);
+        if (!children.length) return;
+        const widths = children.map(child => subtreeWidth(child));
+        const total = widths.reduce((a, b) => a + b, 0) + gapX * 0.35 * (children.length - 1);
+        let cursor = x - total / 2;
+        children.forEach((child, i) => {
+          const childX = cursor + widths[i] / 2;
+          place(child, childX, y + gapY, new Set(seen));
+          cursor += widths[i] + gapX * 0.35;
+        });
+      }
+
+      const anchor = _projectAnchors[projectId] || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      const rootWidths = roots.map(root => subtreeWidth(root));
+      const total = rootWidths.reduce((a, b) => a + b, 0) + gapX * 0.45 * (roots.length - 1);
+      let cursor = anchor.x - total / 2;
+      roots.forEach((root, i) => {
+        const rootX = cursor + rootWidths[i] / 2;
+        place(root, rootX, anchor.y - gapY * 0.35);
+        cursor += rootWidths[i] + gapX * 0.45;
+      });
+    });
+  }
+
   function forceHierarchy(linkData) {
     const gap = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 120;
     const strength = LAYOUT.hierarchyStrength != null ? LAYOUT.hierarchyStrength : 0.2;
     const siblingSpread = LAYOUT.hierarchySiblingSpread != null ? LAYOUT.hierarchySiblingSpread : 160;
     const branchStrength = LAYOUT.hierarchyBranchStrength != null ? LAYOUT.hierarchyBranchStrength : 0.35;
+    const orderStrength = LAYOUT.hierarchyOrderStrength != null ? LAYOUT.hierarchyOrderStrength : 0.12;
+    const crossingStrength = LAYOUT.hierarchyCrossingStrength != null ? LAYOUT.hierarchyCrossingStrength : 0.18;
     const sameGroupChildren = new Map();
     linkData.forEach(e => {
       const p = e.source, c = e.target;
@@ -1258,6 +1394,11 @@
       return nodes;
     }
 
+    function branchCenterX(root) {
+      const branch = branchNodes(root);
+      return branch.reduce((sum, n) => sum + (n.x || 0), 0) / Math.max(1, branch.length);
+    }
+
     return function force(alpha) {
       linkData.forEach(e => {
         const p = e.source, c = e.target;
@@ -1275,7 +1416,7 @@
         if (!parent || children.length < 2) return;
         children
           .slice()
-          .sort((a, b) => String(a.xid).localeCompare(String(b.xid)))
+          .sort((a, b) => branchCenterX(a) - branchCenterX(b) || String(a.xid).localeCompare(String(b.xid)))
           .forEach((child, i, arr) => {
             const targetX = (parent.x || 0) + (i - (arr.length - 1) / 2) * siblingSpread;
             const branch = branchNodes(child);
@@ -1286,8 +1427,104 @@
               n.vx += shift * factor;
             });
           });
+        const ordered = children.slice().sort((a, b) => branchCenterX(a) - branchCenterX(b));
+        for (let i = 0; i < ordered.length - 1; i++) {
+          const left = ordered[i];
+          const right = ordered[i + 1];
+          const leftCx = branchCenterX(left);
+          const rightCx = branchCenterX(right);
+          const minGap = siblingSpread * 0.75;
+          if (rightCx - leftCx >= minGap) continue;
+          const push = (minGap - (rightCx - leftCx)) * orderStrength * alpha;
+          branchNodes(left).forEach(n => { n.vx -= push; });
+          branchNodes(right).forEach(n => { n.vx += push; });
+        }
+      });
+      const sameGroupLinks = linkData.filter(e => (
+        e.source && e.target && e.source.project_id === e.target.project_id
+      ));
+      for (let i = 0; i < sameGroupLinks.length; i++) {
+        for (let j = i + 1; j < sameGroupLinks.length; j++) {
+          const a = sameGroupLinks[i];
+          const b = sameGroupLinks[j];
+          if (a.source.xid === b.source.xid || a.target.xid === b.target.xid) continue;
+          const ay1 = Math.min(a.source.y || 0, a.target.y || 0);
+          const ay2 = Math.max(a.source.y || 0, a.target.y || 0);
+          const by1 = Math.min(b.source.y || 0, b.target.y || 0);
+          const by2 = Math.max(b.source.y || 0, b.target.y || 0);
+          if (Math.min(ay2, by2) - Math.max(ay1, by1) < gap * 0.25) continue;
+
+          const sourceOrder = (a.source.x || 0) - (b.source.x || 0);
+          const targetOrder = branchCenterX(a.target) - branchCenterX(b.target);
+          if (Math.abs(sourceOrder) < 20 || sourceOrder * targetOrder >= 0) continue;
+
+          const desired = Math.sign(sourceOrder) * siblingSpread * 0.55;
+          const deficit = Math.abs(desired - targetOrder);
+          if (deficit <= 0) continue;
+          const push = Math.min(siblingSpread * 0.45, deficit) * crossingStrength * alpha;
+          const aDir = Math.sign(sourceOrder);
+          branchNodes(a.target).forEach(n => { n.vx += aDir * push; });
+          branchNodes(b.target).forEach(n => { n.vx -= aDir * push; });
+        }
+      }
+    };
+  }
+
+  function forceLinkCardAvoidance(nodes, linkData) {
+    const margin = LAYOUT.linkCardAvoidanceMargin != null ? LAYOUT.linkCardAvoidanceMargin : 0;
+    const strength = LAYOUT.linkCardAvoidanceStrength != null ? LAYOUT.linkCardAvoidanceStrength : 0;
+    const samples = Math.max(2, Math.round(LAYOUT.linkCardAvoidanceSamples || 8));
+    if (strength <= 0 || margin <= 0) return function noop() {};
+
+    return function force(alpha) {
+      _linkRouteOffsets = computeLinkRouteOffsets(linkData);
+      const polylines = linkData
+        .filter(link => link.source && link.target && link.source.project_id === link.target.project_id)
+        .map(link => ({ link, pts: linkPolyline(link, samples) }))
+        .filter(item => item.pts.length >= 2);
+
+      nodes.forEach(card => {
+        if (card.fx != null || card.fy != null) return;
+        const threshold = cardRadius(card) + margin;
+        const cx = card.x || 0;
+        const cy = card.y || 0;
+        polylines.forEach(({ link, pts }) => {
+          if (link.source.xid === card.xid || link.target.xid === card.xid) return;
+          if (link.source.project_id !== card.project_id) return;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const closest = closestPointOnSegment(cx, cy, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+            const dx = cx - closest.x;
+            const dy = cy - closest.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist >= threshold) continue;
+            const overlap = threshold - dist;
+            let ux = 0, uy = 0;
+            if (dist > 0.001) {
+              ux = dx / dist;
+              uy = dy / dist;
+            } else {
+              const sx = pts[i + 1][0] - pts[i][0];
+              const sy = pts[i + 1][1] - pts[i][1];
+              const sl = Math.hypot(sx, sy) || 1;
+              ux = -sy / sl;
+              uy = sx / sl;
+            }
+            const push = overlap * strength * alpha;
+            card.vx += ux * push;
+            card.vy += uy * push;
+          }
+        });
       });
     };
+  }
+
+  function closestPointOnSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (!len2) return { x: x1, y: y1 };
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+    return { x: x1 + dx * t, y: y1 + dy * t };
   }
 
   function forceCluster(nodes) {
@@ -1881,6 +2118,12 @@
     if (!_data) return;
     const alive = _data.nodes.filter(n => n.is_alive);
     _projectAnchors = computeProjectAnchors(alive);
+    const xidToNode = {};
+    alive.forEach(n => { xidToNode[n.xid] = n; });
+    const edges = _data.edges.filter(e => {
+      const s = xidToNode[e.source], t = xidToNode[e.target];
+      return s && t && s.is_alive && t.is_alive;
+    });
 
     // Pre-place each node near its project anchor so render()'s position-
     // preservation code picks up fresh coordinates instead of stale ones,
@@ -1891,6 +2134,10 @@
       d.y = (a.y || window.innerHeight / 2) + (Math.random() - 0.5) * 80;
       d.vx = 0; d.vy = 0;
     });
+    if (LAYOUT.hierarchyPrelayoutEnabled !== false) {
+      applyHierarchyPrelayout(alive, edges, xidToNode);
+      _prelayoutInitializedProjects = new Set(alive.map(n => n.project_id));
+    }
 
     render(true);   // simulation starts from anchor positions
     fitView(false); // frame those positions immediately; no startup transition race

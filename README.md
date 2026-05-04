@@ -106,8 +106,12 @@ Important layout settings:
 - `sameCardGroupLinkDistance`: target spacing between linked cards inside one card group.
 - `cardCollisionRadius`: invisible card collision radius.
 - `hierarchySiblingSpread`: horizontal spacing between children of the same parent card.
+- `hierarchyPrelayoutEnabled`: starts each new card group from a tree-like non-crossing placement; link/unlink changes keep existing group positions.
 - `hierarchyBranchStrength`: how strongly a whole child branch keeps its horizontal lane.
+- `hierarchyOrderStrength`: how strongly sibling branches keep left-to-right order to reduce crossings.
 - `linkCurveSpread`: visual offset for curved branches from the same parent card.
+- `linkCardAvoidanceMargin`: protected distance around links so unrelated cards do not sit on top of branches.
+- `linkCardAvoidanceStrength`: how strongly cards are pushed away from unrelated links.
 - `maxZoom`: maximum zoom-in level.
 
 ## Controls
