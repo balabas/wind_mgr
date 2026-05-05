@@ -87,6 +87,7 @@
   let _dragOriginHull = null;
   let _dragTargetProject = null;
   let _dragTargetParent = null;
+  let _dragTargetLabel = null;  // {pid, name} when dragging over a cluster label
   let _settleAfterMoveUntil = 0;
   let _lastMiddleClickAt = 0;
   let _panRestoreTimer = null;
@@ -109,6 +110,7 @@
   let _linkRouteOffsets = {};
   let _currentLinkData = [];
   let _prelayoutInitializedProjects = new Set();
+  let _prevEdgeKeys = new Set(); // tracks previous render's edge set for new-edge detection
 
   const NODE_W  = 180;
   const THUMB_H = 140;
@@ -132,7 +134,7 @@
     sameProjectLinkStrength: 0.35,
     crossProjectLinkStrength: 0.01,
     nodeCharge: -400,
-    nodeCollideRadius: 120,
+    nodeCollideRadius: 10,
     cardArea: 25200,
     cardMinWidth: 110,
     cardMaxWidth: 300,
@@ -765,31 +767,57 @@
     const xidToNode = {};
     nodes.forEach(n => { xidToNode[n.xid] = n; });
 
-    // First pass: restore positions for existing nodes
+    // First pass: restore positions for existing nodes; detect project/edge changes.
+    const movedToProjects = new Set();
+    // Detect children that gained a new parent this update — clear their position so
+    // they get re-seeded below the parent instead of staying wherever they were.
+    const newEdgeKeys = new Set(edges.map(e => `${e.source}->${e.target}`));
+    const newChildXids = new Set();
+    if (topologyChanged) {
+      newEdgeKeys.forEach(k => {
+        if (!_prevEdgeKeys.has(k)) {
+          const targetXid = Number(k.split("->")[1]);
+          newChildXids.add(targetXid);
+        }
+      });
+    }
+    _prevEdgeKeys = newEdgeKeys;
+
     nodes.forEach(n => {
       const sel = _g.select(`[data-xid="${n.xid}"]`);
       const old = sel.node() ? sel.datum() : null;
-      if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; }
+      if (old) {
+        if (topologyChanged && old.project_id !== n.project_id) {
+          // Node moved to a different group — clear position so it gets re-seeded
+          // and invalidate the destination project so prelayout re-runs.
+          movedToProjects.add(n.project_id);
+        } else if (newChildXids.has(n.xid)) {
+          // Node gained a new parent — clear position so it seeds below its parent.
+        } else {
+          n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0;
+        }
+      }
     });
+    movedToProjects.forEach(pid => _prelayoutInitializedProjects.delete(pid));
 
-    // Second pass: seed new nodes — use launch click position if pending, else near parent
+    // Second pass: seed new/moved nodes
+    const pendingPos = _pendingLaunchPos;
+    _pendingLaunchPos = null;
+    let pendingUsed = false;
     nodes.forEach(n => {
       if (n.x != null) return;
-      if (_pendingLaunchPos) {
-        n.x = _pendingLaunchPos.x;
-        n.y = _pendingLaunchPos.y;
-        n.vx = 0; n.vy = 0;
-        _pendingLaunchPos = null;
-        return;
-      }
       const par = xidToNode[n.parent_xid];
       const anchor = _projectAnchors[n.project_id];
       if (par && par.x != null) {
-        // Place at link distance so sim starts near equilibrium and doesn't need to push hard
-        const angle = Math.random() * 2 * Math.PI;
-        const d = LAYOUT.sameProjectLinkDistance || 180;
-        n.x = par.x + Math.cos(angle) * d;
-        n.y = par.y + Math.sin(angle) * d;
+        // Place below parent so hierarchy force starts near equilibrium (never above parent).
+        const gapY = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 160;
+        n.x = par.x + (Math.random() - 0.5) * 80;
+        n.y = par.y + gapY;
+      } else if (pendingPos && !pendingUsed) {
+        // No parent: place at the click/launch position.
+        n.x = pendingPos.x;
+        n.y = pendingPos.y;
+        pendingUsed = true;
       } else {
         const base = anchor || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
         n.x = base.x + (Math.random() - 0.5) * 100;
@@ -892,7 +920,7 @@
         .strength(d => d.source.project_id === d.target.project_id
           ? LAYOUT.sameProjectLinkStrength : LAYOUT.crossProjectLinkStrength))
       .force("charge", d3.forceManyBody().strength(LAYOUT.nodeCharge))
-      .force("collide", d3.forceCollide(d => Math.max(LAYOUT.nodeCollideRadius, cardRadius(d))))
+      .force("collide", d3.forceCollide(d => cardRadius(d) + LAYOUT.nodeCollideRadius))
       .force("cluster", forceCluster(nodes))
       .force("projectCollide", forceProjectCollide(nodes))
       .force("projectRectCollide", forceProjectRectCollide(nodes))
@@ -921,7 +949,7 @@
 
     const size = cardSize(d);
     const hw = size.w / 2, hh = size.h / 2;
-    const displayTitle = d.tab_title || d.project_name || d.title;
+    const displayTitle = d.card_name || d.tab_title || d.project_name || d.title;
     const truncTitle = displayTitle.length > 24 ? displayTitle.slice(0, 23) + "…" : displayTitle;
 
     g.select(".node-bg")
@@ -1299,8 +1327,9 @@
     const rows = Math.ceil(ids.length / cols);
     const marginX = LAYOUT.projectMargin, marginY = LAYOUT.projectMargin;
     const cellW = LAYOUT.projectCellW, cellH = LAYOUT.projectCellH;
-    const width = Math.max(cellW * cols, window.innerWidth - marginX * 2);
-    const height = Math.max(cellH * rows, window.innerHeight - marginY * 2);
+    // Use natural grid size, capped to viewport so groups don't anchor outside.
+    const width = Math.min(cellW * cols, window.innerWidth - marginX * 2);
+    const height = Math.min(cellH * rows, window.innerHeight - marginY * 2);
 
     ids.forEach((pid, i) => {
       const col = i % cols;
@@ -1761,6 +1790,26 @@
     _dragTargetProject = findDropProject(e.x, e.y, d);
     _dragTargetParent = findDropParent(e.x, e.y, d, _dragTargetProject);
     if (_dragTargetParent) _dragTargetProject = _dragTargetParent.project_id;
+
+    // Detect drag over cluster label using getBoundingClientRect — works correctly
+    // with CSS matrix3d transforms on the SVG group (elementFromPoint does not).
+    const px = e.sourceEvent.clientX, py = e.sourceEvent.clientY;
+    let foundLabel = null;
+    _g.select(".labels-layer").selectAll(".cluster-label").each(function(ld) {
+      const r = this.getBoundingClientRect();
+      const padX = 28, padY = 18;
+      if (px >= r.left - padX && px <= r.right + padX &&
+          py >= r.top - padY && py <= r.bottom + padY) {
+        foundLabel = ld;
+      }
+    });
+    _dragTargetLabel = foundLabel ? { pid: foundLabel.pid, name: foundLabel.proj.name } : null;
+    d3.selectAll(".cluster-label").classed("label-drop-target", false);
+    if (_dragTargetLabel) {
+      d3.selectAll(".cluster-label").filter(ld => ld.pid === _dragTargetLabel.pid)
+        .classed("label-drop-target", true);
+    }
+
     setDragFeedback(d, _dragTargetProject, _dragTargetParent);
     renderNodesOnly();
     renderLinksOnly();
@@ -1811,7 +1860,27 @@
     }
     console.log(`[drag end] xid=${d.xid} from=${startedProject} target=${target} parent=${parentTarget ? parentTarget.xid : null} next=${nextProject} own=${ownProject} changed=${nextProject !== d.project_id}`);
     const projectChanged = nextProject !== d.project_id;
-    if (parentTarget) {
+    const labelTarget = _dragTargetLabel;
+    _dragTargetLabel = null;
+    d3.selectAll(".cluster-label").classed("label-drop-target", false);
+
+    if (labelTarget) {
+      if (restore) { d.x = restore.x; d.y = restore.y; }
+      d.fx = null; d.fy = null;
+      stopLayoutMotion();
+      renderNodesOnly();
+      renderLinksOnly();
+      clearDragFeedback();
+      _dragDropHulls = null;
+      _dragActive = false;
+      _dragOriginProject = null;
+      _dragOriginHull = null;
+      _dragTargetProject = null;
+      _dragTargetParent = null;
+      _queuedGraphData = null;
+      sendToBackend({ action: "rename_project", project_id: labelTarget.pid, name: d.app_name || d.title });
+      return;
+    } else if (parentTarget) {
       d.parent_xid = parentTarget.xid;
       _projectAnchors = computeProjectAnchors(_data.nodes.filter(n => n.is_alive));
       sendToBackend({ action: "set_parent", xid: d.xid, parent_xid: parentTarget.xid, with_children: "same_project" });
@@ -1987,6 +2056,8 @@
       .classed("drop-target", false);
     d3.selectAll(".node-g")
       .classed("drop-parent-target", false);
+    d3.selectAll(".cluster-label")
+      .classed("label-drop-target", false);
   }
 
   function findNearestProject(x, y, currentPid, threshold) {
@@ -2282,6 +2353,9 @@
       projectList.appendChild(item);
     }
 
+    const resetNameItem = document.getElementById("ctx-reset-card-name");
+    if (resetNameItem) resetNameItem.style.display = d.card_name ? "" : "none";
+
     menu.style.display = "block";
     menu.style.left = "0px";
     menu.style.top = "0px";
@@ -2411,6 +2485,8 @@
       sendToBackend({ action: "remove_link", xid: _ctxNode.xid });
     } else if (action === "unlink_children") {
       sendToBackend({ action: "unlink_children", xid: _ctxNode.xid });
+    } else if (action === "reset_card_name") {
+      sendToBackend({ action: "set_card_name", xid: _ctxNode.xid, name: "" });
     }
     hideContextMenu();
   }

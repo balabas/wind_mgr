@@ -439,6 +439,7 @@ class JSBridge:
                 "title": r.title,
                 "app_type": r.app_type,
                 "app_name": r.app_name,
+                "card_name": r.metadata.get("card_name", ""),
                 "tab_title": r.metadata.get("tab_title", ""),
                 "domain": r.metadata.get("domain", ""),
                 "project_name": r.metadata.get("project_name", ""),
@@ -590,6 +591,12 @@ class JSBridge:
                 )
             elif action == "rename_project":
                 self._rename_project(msg["project_id"], msg["name"])
+            elif action == "set_card_name":
+                xid = int(msg["xid"])
+                rec = self._reg.get(xid)
+                if rec:
+                    rec.metadata["card_name"] = str(msg.get("name", ""))
+                    self.push_graph()
             elif action == "refresh_thumb":
                 self._capture_one(int(msg["xid"]), reason="manual", force=True)
             elif action == "place_window":
@@ -633,11 +640,15 @@ class JSBridge:
             elif action == "unlink_children":
                 self._unlink_children(int(msg["xid"]))
             elif action == "launch_app":
-                pid = self._launcher.launch(str(msg.get("app_id", "")))
+                app_id = str(msg.get("app_id", ""))
+                app_info = self._launcher.get_app(app_id)
+                pid = self._launcher.launch(app_id)
                 if pid is not None:
                     self._pending_launches.append({
                         "project_id": msg.get("project_id") or None,
                         "parent_xid": msg.get("parent_xid") or None,
+                        "wm_class": (app_info or {}).get("wm_class", "").lower(),
+                        "pid": pid,
                         "ts": time.monotonic(),
                     })
             elif action == "toggle_project":
@@ -1477,20 +1488,43 @@ class JSBridge:
         self._pending_launches = [h for h in self._pending_launches if now - h["ts"] < 10]
         if not self._pending_launches:
             return
-        # Apply the oldest pending hint to the first window that opens — the app
-        # already knows the user's intent (which group was clicked, or empty space).
-        hint = self._pending_launches.pop(0)
+        rec_classes = {
+            record.wm_class.lower(),
+            record.wm_class_group.lower(),
+            record.app_name.lower(),
+        }
+        hint = None
+        # Primary: match by PID (most reliable; WM_CLASS may not be set yet at window-opened time).
+        for i, h in enumerate(self._pending_launches):
+            if h.get("pid") and h["pid"] == record.pid:
+                hint = self._pending_launches.pop(i)
+                break
+        # Fallback: match by wm_class (handles windows whose pid doesn't match the launcher pid).
+        if hint is None:
+            for i, h in enumerate(self._pending_launches):
+                expected = h.get("wm_class", "")
+                if not expected or expected in rec_classes:
+                    hint = self._pending_launches.pop(i)
+                    break
+        if hint is None:
+            return
         project_id = hint["project_id"]
         parent_xid = hint["parent_xid"]
         if parent_xid is not None:
             parent = self._reg.get(parent_xid)
             if parent is None or not parent.is_alive:
                 parent_xid = None
+        # Clean up stale back-link on the old parent before overriding parent_xid.
+        old_parent_xid = record.parent_xid
+        if old_parent_xid is not None and old_parent_xid != parent_xid:
+            old_parent = self._reg.get(old_parent_xid)
+            if old_parent and record.xid in old_parent.children_xids:
+                old_parent.children_xids.remove(record.xid)
         record.parent_xid = parent_xid
         record.project_id = str(project_id) if project_id is not None else None
         log.info(
-            "launch hint applied xid=%s project=%s parent=%s",
-            record.xid, record.project_id, record.parent_xid,
+            "launch hint applied xid=%s project=%s parent=%s wm_class=%r pid=%s",
+            record.xid, record.project_id, record.parent_xid, record.wm_class, record.pid,
         )
 
     def _on_window_opened(self, record, **_kw) -> None:

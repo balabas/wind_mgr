@@ -69,6 +69,7 @@ def _parse_desktop(path: str) -> dict | None:
         "name": name,
         "exec": s.get("exec", ""),
         "icon": s.get("icon", ""),
+        "wm_class": s.get("startupwmclass", "").strip(),
     }
 
 
@@ -131,6 +132,9 @@ class AppLauncher:
             a["name"].lower(),
         ))
         return result
+
+    def get_app(self, app_id: str) -> dict | None:
+        return self._apps.get(app_id)
 
     def launch(self, app_id: str) -> int | None:
         """Launch app and return the process PID, or None on failure."""

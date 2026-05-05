@@ -65,6 +65,12 @@ svg#graph {
   stroke: rgba(15,15,35,0.95);
   stroke-width: 5px;
   stroke-linejoin: round;
+  transition: font-size 0.1s;
+}
+.cluster-label.label-drop-target {
+  font-size: 15px;
+  fill: #ffe66d !important;
+  stroke: rgba(15,15,35,0.95);
 }
 
 /* Edges */
