@@ -12,6 +12,7 @@ body {
   width: 100vw;
   height: 100vh;
   position: relative;
+  contain: strict;
 }
 
 svg#graph {
@@ -137,11 +138,27 @@ svg#graph {
   stroke-width: 5;
   stroke-dasharray: 10 5;
 }
-/* During pan/zoom: freeze overlay so compositing layer stays valid */
+/* CSS clip on thumbnails — inset() is a simple geometric clip the compositor
+   can handle on the GPU, unlike SVG clip-path url() which forces software rendering. */
+.node-thumb {
+  clip-path: inset(0 round 8px);
+}
+
+/* During pan/zoom: freeze overlay, skip hit-testing, use fast pixel rendering */
 svg#graph.is-panning .node-g.active-window .active-overlay,
 svg#graph.is-panning .node-g.active-window-new .active-overlay {
   animation: none;
   opacity: 0.15;
+}
+svg#graph.is-panning .graph-world {
+  pointer-events: none;
+}
+svg#graph.is-panning .node-thumb {
+  image-rendering: pixelated;
+}
+svg#graph.is-panning .link,
+svg#graph.is-panning .cluster-hull {
+  shape-rendering: crispEdges;
 }
 /* Hidden wind_mgr keeps the page loaded so D3 positions survive hide/show.
    Stop CSS animation/transition work while GTK window is hidden. */

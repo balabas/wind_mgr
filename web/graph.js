@@ -389,14 +389,14 @@
 
   function applyZoomTransform(transform) {
     if (!_g || !transform) return;
-    // Use CSS transform for viewport movement. It renders the same graphics as
-    // an SVG transform attribute, but avoids forcing WebKit to rebuild SVG
-    // image/filter layout on every pan frame.
+    const { k, x, y } = transform;
+    // matrix3d forces a GPU compositing layer in WebKit (matrix() may stay software).
     _g
-      .style("transform", `matrix(${transform.k}, 0, 0, ${transform.k}, ${transform.x}, ${transform.y})`)
+      .style("transform", `matrix3d(${k},0,0,0, 0,${k},0,0, 0,0,1,0, ${x},${y},0,1)`)
       .style("transform-origin", "0 0")
       .style("transform-box", "view-box");
-    sendLivePreviewBoundsThrottled();
+    // Skip getBoundingClientRect during active pan — it forces a synchronous layout flush.
+    if (!_panPerformanceActive) sendLivePreviewBoundsThrottled();
   }
 
   function setBackendInteractionActive(active) {
@@ -790,13 +790,9 @@
           .on("end",   dragEnded));
 
     nodeEnter.append("rect").attr("class", "node-bg");
-    nodeEnter.append("clipPath")
-      .attr("id", d => `card-clip-${d.xid}`)
-      .append("rect").attr("class", "card-clip-rect").attr("rx", 8);
     nodeEnter.append("image")
       .attr("class", "node-thumb")
-      .attr("preserveAspectRatio", "xMidYMid meet")
-      .attr("clip-path", d => `url(#card-clip-${d.xid})`);
+      .attr("preserveAspectRatio", "xMidYMid meet");
     nodeEnter.append("rect").attr("class", "active-overlay");
     nodeEnter.append("image").attr("class", "node-icon").attr("width", 20).attr("height", 20);
     nodeEnter.append("title");
@@ -881,10 +877,6 @@
       .attr("x", -hw).attr("y", -hh)
       .attr("width", size.w).attr("height", size.h)
       .attr("rx", 8);
-
-    g.select(".card-clip-rect")
-      .attr("x", -hw).attr("y", -hh)
-      .attr("width", size.w).attr("height", size.h);
 
     // Thumbnail
     g.select(".node-thumb")
