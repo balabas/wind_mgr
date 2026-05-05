@@ -2,7 +2,7 @@
 
 **wind_mgr** is a visual window manager overlay for Ubuntu/GNOME on X11. Instead of alt-tabbing through a flat list, you see all your open windows as thumbnail cards arranged in a zoomable graph — grouped, linked, and always one click away.
 
-![wind_mgr screenshot](docs/Screenshot from 2026-05-05 17-08-07.png)
+![wind_mgr screenshot](<docs/Screenshot from 2026-05-05 17-08-07.png>)
 
 ---
 
