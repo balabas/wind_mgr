@@ -287,6 +287,21 @@
       // (e.g. after D3 drag suppresses the node-g click, or pointer-events edge cases in WebKit)
       const top = document.elementFromPoint(e.clientX, e.clientY);
       if (top && top.closest(".node-g")) return;
+      // Third guard: during/after pan, .graph-world has pointer-events:none so DOM hit-testing
+      // is blind to cards. Fall back to graph-coordinate bounds check against the node map.
+      if (_svg.classed("is-panning")) {
+        const tr = _currentZoomTransform;
+        const gx = (e.clientX - tr.x) / tr.k;
+        const gy = (e.clientY - tr.y) / tr.k;
+        for (const n of Object.values(_nodeMap)) {
+          if (n.x == null) continue;
+          const sz = cardSize(n);
+          if (Math.abs(gx - n.x) < sz.w / 2 && Math.abs(gy - n.y) < sz.h / 2) {
+            onNodeClick(n, "panning-fallback");
+            return;
+          }
+        }
+      }
       e.stopPropagation();
       hideContextMenu();
       hideLinkContextMenu();
