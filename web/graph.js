@@ -104,6 +104,8 @@
   let _livePreviewNode = null;
   let _lastLivePreviewSentAt = 0;
   let _showActiveFlyState = null;
+  let _appList = [];           // [{id, name, icon_url, favorite}]
+  let _pendingLaunchPos = null; // {x, y} graph coords for next new card
   let _linkRouteOffsets = {};
   let _currentLinkData = [];
   let _prelayoutInitializedProjects = new Set();
@@ -270,7 +272,45 @@
     _g.append("g").attr("class", "labels-layer");
     _overlay = _svg.append("g").attr("class", "viewport-overlay");
 
-    document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); });
+    document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); hideRadialMenu(); });
+    document.getElementById("radial-backdrop").addEventListener("click", (e) => {
+      e.stopPropagation();
+      hideRadialMenu();
+    });
+    _svg.on("click.radial", (e) => {
+      // Ignore clicks on cards, links, labels — only empty space and hull fills
+      const t = e.target;
+      if (t.closest(".node-g") || t.closest(".link-hit") || t.closest(".cluster-label")) return;
+      // Second guard: elementFromPoint catches cases where event.target ancestry diverges
+      // (e.g. after D3 drag suppresses the node-g click, or pointer-events edge cases in WebKit)
+      const top = document.elementFromPoint(e.clientX, e.clientY);
+      if (top && top.closest(".node-g")) return;
+      e.stopPropagation();
+      hideContextMenu();
+      hideLinkContextMenu();
+      const tr = _currentZoomTransform;
+      const graphX = (e.clientX - tr.x) / tr.k;
+      const graphY = (e.clientY - tr.y) / tr.k;
+
+      // Determine group context from the clicked hull (if any)
+      const hullEl = t.closest(".hull-group");
+      let context = null; // null = own new group
+      if (hullEl) {
+        const datum = d3.select(hullEl).datum();
+        if (datum) {
+          const pid = datum.pid;
+          const activeXid = _data && _data.active_xid;
+          const activeNode = activeXid ? _nodeMap[activeXid] : null;
+          const activeInGroup = activeNode && activeNode.project_id === pid;
+          context = {
+            project_id: pid,
+            parent_xid: activeInGroup ? activeXid : null,
+          };
+        }
+      }
+
+      showRadialMenu(e.clientX, e.clientY, graphX, graphY, context);
+    });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", () => { _ctrlDown = false; setForceFrozen(false); });
@@ -500,6 +540,10 @@
         _simulation.restart();
       }
     },
+
+    setAppList(apps) {
+      _appList = apps || [];
+    },
   };
 
   function reuseGraphObjects(data) {
@@ -728,9 +772,16 @@
       if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; }
     });
 
-    // Second pass: seed new nodes near parent or project anchor (avoids top-left spawn)
+    // Second pass: seed new nodes — use launch click position if pending, else near parent
     nodes.forEach(n => {
       if (n.x != null) return;
+      if (_pendingLaunchPos) {
+        n.x = _pendingLaunchPos.x;
+        n.y = _pendingLaunchPos.y;
+        n.vx = 0; n.vy = 0;
+        _pendingLaunchPos = null;
+        return;
+      }
       const par = xidToNode[n.parent_xid];
       const anchor = _projectAnchors[n.project_id];
       if (par && par.x != null) {
@@ -1651,6 +1702,7 @@
       _ctrlDown = true;
       setForceFrozen(true);
     }
+    if (e.key === "Escape") hideRadialMenu();
   }
 
   function onKeyUp(e) {
@@ -2387,6 +2439,179 @@
   // ── Helpers ───────────────────────────────────────────────────────────────
   function appEmoji(appType) {
     return ({ chrome:"🌐", vscode:"💻", editor:"📝", terminal:"⬛", generic:"🪟" })[appType] || "🪟";
+  }
+
+  // ── Radial app launcher ───────────────────────────────────────────────────
+
+  const _INNER_R = 90;    // px — favorites ring radius
+  const _RING_STEP = 95;  // px — gap between outer rings
+
+  // How many items fit on a ring given its radius and icon spacing
+  function _ringCapacity(r, isInner) {
+    const spacing = isInner ? 52 : 44; // min center-to-center px
+    return Math.max(1, Math.floor(2 * Math.PI * r / spacing));
+  }
+
+  let _radialOpen = false;
+  let _radialGraphPos = null;   // {x, y} in graph coords
+  let _radialContext = null;    // {project_id, parent_xid} or null (own group)
+
+  function showRadialMenu(screenX, screenY, graphX, graphY, context) {
+    if (!_appList.length) return;
+    _radialGraphPos = { x: graphX, y: graphY };
+    _radialContext = context || null;
+
+    const favs = _appList.filter(a => a.favorite);
+    const others = _appList.filter(a => !a.favorite);
+
+    // Build ring assignment: inner ring = favorites (up to capacity), then spill + others
+    // across successive outer rings until all apps are placed.
+    const innerCap = _ringCapacity(_INNER_R, true);
+    const innerItems = favs.slice(0, innerCap);
+    let remaining = [...favs.slice(innerCap), ...others];
+
+    const outerRings = []; // [{r, items}]
+    let ringIdx = 0;
+    while (remaining.length > 0) {
+      const r = _INNER_R + _RING_STEP * (ringIdx + 1);
+      const cap = _ringCapacity(r, false);
+      outerRings.push({ r, items: remaining.splice(0, cap) });
+      ringIdx++;
+    }
+
+    const outerR = outerRings.length ? outerRings[outerRings.length - 1].r : _INNER_R;
+
+    // Clamp center to viewport so rings don't go off-screen
+    const margin = outerR + 24;
+    const cx = Math.max(margin, Math.min(window.innerWidth - margin, screenX));
+    const cy = Math.max(margin, Math.min(window.innerHeight - margin, screenY));
+
+    const menu = document.getElementById("radial-menu");
+    const rings = document.getElementById("radial-rings");
+    rings.innerHTML = "";
+
+    // Fader background — radial gradient circle sized to outermost ring
+    const faderR = outerR + 48;
+    const fader = document.createElement("div");
+    fader.className = "radial-fader";
+    const fd = faderR * 2;
+    fader.style.cssText = `left:${cx}px;top:${cy}px;width:${fd}px;height:${fd}px;`;
+    rings.appendChild(fader);
+
+    // Guide circles for each ring
+    if (innerItems.length) _addGuideCircle(rings, cx, cy, _INNER_R);
+    outerRings.forEach(ring => _addGuideCircle(rings, cx, cy, ring.r));
+
+    // Center dot
+    const dot = document.createElement("div");
+    dot.className = "radial-center";
+    dot.style.left = cx + "px";
+    dot.style.top = cy + "px";
+    rings.appendChild(dot);
+
+    // Populate rings
+    innerItems.forEach((app, i) => {
+      _addRadialItem(rings, app, i, innerItems.length, _INNER_R, cx, cy, false);
+    });
+    outerRings.forEach(ring => {
+      ring.items.forEach((app, i) => {
+        _addRadialItem(rings, app, i, ring.items.length, ring.r, cx, cy, true);
+      });
+    });
+
+    menu.classList.remove("radial-hidden");
+    _radialOpen = true;
+
+    // Animate items in
+    requestAnimationFrame(() => {
+      rings.querySelectorAll(".radial-item").forEach(el => el.classList.add("spawned"));
+    });
+  }
+
+  function _addGuideCircle(container, cx, cy, r) {
+    const el = document.createElement("div");
+    el.className = "radial-ring-guide";
+    const d = r * 2;
+    el.style.cssText = `left:${cx}px;top:${cy}px;width:${d}px;height:${d}px;`;
+    container.appendChild(el);
+  }
+
+  function _addRadialItem(container, app, idx, total, radius, cx, cy, isOuter) {
+    const angle = total === 1
+      ? -Math.PI / 2
+      : (2 * Math.PI * idx / total) - Math.PI / 2;
+    const x = cx + radius * Math.cos(angle);
+    const y = cy + radius * Math.sin(angle);
+
+    const item = document.createElement("div");
+    item.className = "radial-item" + (isOuter ? " outer" : "");
+    item.style.left = x + "px";
+    item.style.top = y + "px";
+    item.dataset.appId = app.id;
+    item.dataset.appName = app.name;
+
+    if (app.icon_url) {
+      const img = document.createElement("img");
+      img.src = app.icon_url;
+      img.alt = app.name;
+      img.onerror = () => { img.replaceWith(_makePlaceholder(app.name)); };
+      item.appendChild(img);
+    } else {
+      item.appendChild(_makePlaceholder(app.name));
+    }
+
+    item.addEventListener("mouseenter", () => _showRadialLabel(app.name, x, y));
+    item.addEventListener("mouseleave", () => _hideRadialLabel());
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      _launchApp(app.id);
+    });
+
+    container.appendChild(item);
+  }
+
+  function _makePlaceholder(name) {
+    const el = document.createElement("div");
+    el.className = "radial-item-placeholder";
+    el.textContent = (name || "?")[0].toUpperCase();
+    return el;
+  }
+
+  function _showRadialLabel(name, itemX, itemY) {
+    const label = document.getElementById("radial-label");
+    label.textContent = name;
+    // Position label below the item
+    label.style.left = itemX + "px";
+    label.style.top = (itemY + 28) + "px";
+    label.classList.add("visible");
+  }
+
+  function _hideRadialLabel() {
+    document.getElementById("radial-label").classList.remove("visible");
+  }
+
+  function _launchApp(appId) {
+    if (_radialGraphPos) {
+      _pendingLaunchPos = { x: _radialGraphPos.x, y: _radialGraphPos.y };
+    }
+    const msg = { action: "launch_app", app_id: appId };
+    if (_radialContext) {
+      msg.project_id = _radialContext.project_id;
+      if (_radialContext.parent_xid != null) msg.parent_xid = _radialContext.parent_xid;
+    }
+    sendToBackend(msg);
+    hideRadialMenu();
+  }
+
+  function hideRadialMenu() {
+    if (!_radialOpen) return;
+    _radialOpen = false;
+    _radialGraphPos = null;
+    _radialContext = null;
+    const menu = document.getElementById("radial-menu");
+    menu.classList.add("radial-hidden");
+    document.getElementById("radial-rings").innerHTML = "";
+    _hideRadialLabel();
   }
 
   // ── Boot ──────────────────────────────────────────────────────────────────

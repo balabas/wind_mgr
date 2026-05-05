@@ -440,3 +440,131 @@ svg#graph.suspended .active-overlay {
   font-size: 10px;
   color: #555;
 }
+
+/* ── Radial app launcher ─────────────────────────────────────────────────── */
+#radial-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 8000;
+  pointer-events: none;
+}
+#radial-menu.radial-hidden { display: none; }
+
+#radial-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  cursor: default;
+}
+
+#radial-rings {
+  position: absolute;
+  pointer-events: none;
+}
+
+.radial-fader {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    rgba(8, 10, 28, 0.82) 0%,
+    rgba(8, 10, 28, 0.55) 35%,
+    rgba(8, 10, 28, 0.18) 65%,
+    transparent 100%
+  );
+}
+
+#radial-label {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(10, 12, 30, 0.9);
+  border: 1px solid #3a4668;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  white-space: nowrap;
+  transform: translate(-50%, 0);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+#radial-label.visible { opacity: 1; }
+
+.radial-item {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(20, 24, 50, 0.92);
+  border: 1.5px solid #3a4668;
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%) scale(0.4);
+  opacity: 0;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1),
+              opacity 0.14s ease,
+              border-color 0.12s,
+              background 0.12s;
+}
+.radial-item.outer {
+  width: 36px;
+  height: 36px;
+}
+.radial-item.spawned {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
+}
+.radial-item:hover {
+  background: rgba(50, 70, 130, 0.95);
+  border-color: #4a90d9;
+  transform: translate(-50%, -50%) scale(1.18) !important;
+  z-index: 1;
+}
+.radial-item img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  pointer-events: none;
+  image-rendering: auto;
+}
+.radial-item.outer img {
+  width: 20px;
+  height: 20px;
+}
+.radial-item-placeholder {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: #7a7aaa;
+  pointer-events: none;
+}
+
+/* Center dot */
+.radial-center {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #4a90d9;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  box-shadow: 0 0 8px rgba(74, 144, 217, 0.6);
+}
+
+/* Ring guide circles */
+.radial-ring-guide {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid rgba(74, 144, 217, 0.12);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}

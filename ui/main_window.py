@@ -238,6 +238,7 @@ class MainWindow:
 
     def _initial_push(self) -> bool:
         self._bridge.push_graph()
+        self._bridge.push_app_list()
         return False  # one-shot
 
     def _on_delete(self, win: Gtk.Window, event) -> bool:

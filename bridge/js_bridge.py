@@ -12,6 +12,7 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, WebKit2
 
 from core.activity_stats import ActivityStats
+from core.app_launcher import AppLauncher
 from core.config import read_config
 from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED, EVT_WINDOW_CLOSED, EVT_WINDOW_OPENED
 from core.relationship import RelationshipTree
@@ -145,6 +146,10 @@ class JSBridge:
             100,
             int(cfg.getfloat("activation", "active_window_show_animation_ms", fallback=650)),
         )
+        self._launcher = AppLauncher()
+        # Pending launch hints: list of {pid, project_id, parent_xid, ts}
+        # Applied to the first window that opens with a matching pid.
+        self._pending_launches: list[dict] = []
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
         bus.subscribe(EVT_WINDOW_OPENED, self._on_window_opened)
@@ -334,6 +339,20 @@ class JSBridge:
             )
         except Exception:
             log.exception("push_active_window failed")
+
+    def push_app_list(self) -> None:
+        if self._webview is None:
+            return
+        try:
+            apps = self._launcher.get_app_list()
+            js = (
+                "try{"
+                f"if(window.windMgr)window.windMgr.setAppList({json.dumps(apps)});"
+                "}catch(e){console.error('setAppList error:',e.toString());}"
+            )
+            self._webview.evaluate_javascript(js, -1, None, None, None, self._js_done_cb, None)
+        except Exception:
+            log.exception("push_app_list failed")
 
     def push_thumbnail_update(self, xids: list[int]) -> None:
         if self._webview is None or not xids:
@@ -613,6 +632,14 @@ class JSBridge:
                 self._remove_link(int(msg["xid"]))
             elif action == "unlink_children":
                 self._unlink_children(int(msg["xid"]))
+            elif action == "launch_app":
+                pid = self._launcher.launch(str(msg.get("app_id", "")))
+                if pid is not None:
+                    self._pending_launches.append({
+                        "project_id": msg.get("project_id") or None,
+                        "parent_xid": msg.get("parent_xid") or None,
+                        "ts": time.monotonic(),
+                    })
             elif action == "toggle_project":
                 pass  # future: collapse project
         except Exception:
@@ -1445,10 +1472,32 @@ class JSBridge:
         log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
         self._capture_one(old_xid, reason="focus-leave")
 
+    def _apply_launch_hint(self, record) -> None:
+        now = time.monotonic()
+        self._pending_launches = [h for h in self._pending_launches if now - h["ts"] < 10]
+        if not self._pending_launches:
+            return
+        # Apply the oldest pending hint to the first window that opens — the app
+        # already knows the user's intent (which group was clicked, or empty space).
+        hint = self._pending_launches.pop(0)
+        project_id = hint["project_id"]
+        parent_xid = hint["parent_xid"]
+        if parent_xid is not None:
+            parent = self._reg.get(parent_xid)
+            if parent is None or not parent.is_alive:
+                parent_xid = None
+        record.parent_xid = parent_xid
+        record.project_id = str(project_id) if project_id is not None else None
+        log.info(
+            "launch hint applied xid=%s project=%s parent=%s",
+            record.xid, record.project_id, record.parent_xid,
+        )
+
     def _on_window_opened(self, record, **_kw) -> None:
         if record is None or _is_self_record(record):
             return
         xid = int(record.xid)
+        self._apply_launch_hint(record)
         self._failed_capture_attempts[xid] = 0
         delay_ms = self._new_window_capture_delay_ms
         log.debug("new window capture scheduled xid=%s delay=%sms title=%r", xid, delay_ms, record.title)
