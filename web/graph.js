@@ -2443,13 +2443,20 @@
 
   // ── Radial app launcher ───────────────────────────────────────────────────
 
-  const _INNER_R = 90;    // px — favorites ring radius
-  const _RING_STEP = 95;  // px — gap between outer rings
+  const _INNER_R_MIN = 90; // px — minimum favorites ring radius
+  const _INNER_SPACING = 52; // px — min center-to-center for inner ring icons
+  const _RING_STEP = 95;   // px — gap between outer rings
 
   // How many items fit on a ring given its radius and icon spacing
   function _ringCapacity(r, isInner) {
-    const spacing = isInner ? 52 : 44; // min center-to-center px
+    const spacing = isInner ? _INNER_SPACING : 44; // min center-to-center px
     return Math.max(1, Math.floor(2 * Math.PI * r / spacing));
+  }
+
+  // Radius that fits exactly n items with _INNER_SPACING between them
+  function _innerRadiusFor(n) {
+    if (n <= 1) return _INNER_R_MIN;
+    return Math.max(_INNER_R_MIN, Math.ceil(n * _INNER_SPACING / (2 * Math.PI)));
   }
 
   let _radialOpen = false;
@@ -2464,22 +2471,21 @@
     const favs = _appList.filter(a => a.favorite);
     const others = _appList.filter(a => !a.favorite);
 
-    // Build ring assignment: inner ring = favorites (up to capacity), then spill + others
-    // across successive outer rings until all apps are placed.
-    const innerCap = _ringCapacity(_INNER_R, true);
-    const innerItems = favs.slice(0, innerCap);
-    let remaining = [...favs.slice(innerCap), ...others];
+    // Inner ring: expand radius to fit all favorites rather than clipping them
+    const innerR = _innerRadiusFor(favs.length);
+    const innerItems = favs;
+    let remaining = [...others];
 
     const outerRings = []; // [{r, items}]
     let ringIdx = 0;
     while (remaining.length > 0) {
-      const r = _INNER_R + _RING_STEP * (ringIdx + 1);
+      const r = innerR + _RING_STEP * (ringIdx + 1);
       const cap = _ringCapacity(r, false);
       outerRings.push({ r, items: remaining.splice(0, cap) });
       ringIdx++;
     }
 
-    const outerR = outerRings.length ? outerRings[outerRings.length - 1].r : _INNER_R;
+    const outerR = outerRings.length ? outerRings[outerRings.length - 1].r : innerR;
 
     // Clamp center to viewport so rings don't go off-screen
     const margin = outerR + 24;
@@ -2499,7 +2505,7 @@
     rings.appendChild(fader);
 
     // Guide circles for each ring
-    if (innerItems.length) _addGuideCircle(rings, cx, cy, _INNER_R);
+    if (innerItems.length) _addGuideCircle(rings, cx, cy, innerR);
     outerRings.forEach(ring => _addGuideCircle(rings, cx, cy, ring.r));
 
     // Center dot
@@ -2511,7 +2517,7 @@
 
     // Populate rings
     innerItems.forEach((app, i) => {
-      _addRadialItem(rings, app, i, innerItems.length, _INNER_R, cx, cy, false);
+      _addRadialItem(rings, app, i, innerItems.length, innerR, cx, cy, false);
     });
     outerRings.forEach(ring => {
       ring.items.forEach((app, i) => {
