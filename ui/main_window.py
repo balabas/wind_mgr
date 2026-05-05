@@ -144,11 +144,11 @@ class MainWindow:
     def _build_tray_menu(self) -> Gtk.Menu:
         menu = Gtk.Menu()
 
-        item_toggle = Gtk.MenuItem(label="Show / Hide  [Super+W]")
+        item_toggle = Gtk.MenuItem(label="Show / Hide")
         item_toggle.connect("activate", lambda _: self.toggle())
         menu.append(item_toggle)
 
-        item_rebind = Gtk.MenuItem(label="Rebind Super+W hotkey")
+        item_rebind = Gtk.MenuItem(label="Rebind hotkey")
         item_rebind.connect("activate", lambda _: self._show_hotkey_dialog())
         menu.append(item_rebind)
 
