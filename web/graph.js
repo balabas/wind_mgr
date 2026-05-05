@@ -344,6 +344,13 @@
       setRaiseGroupButtonState(this, enabled);
       sendToBackend({ action: "set_raise_card_group_on_card_activate", enabled });
     });
+    const autoParentButton = document.getElementById("btn-auto-parent");
+    setAutoParentButtonState(autoParentButton, defaultAutoParentOnOpen());
+    autoParentButton.addEventListener("click", function () {
+      const enabled = !this.classList.contains("active");
+      setAutoParentButtonState(this, enabled);
+      sendToBackend({ action: "set_auto_parent_on_open", enabled });
+    });
     document.getElementById("btn-fit").addEventListener("click", fitView);
     document.getElementById("btn-reset").addEventListener("click", resetLayout);
     _initialized = true;
@@ -362,6 +369,21 @@
       ? "On: card click raises real windows from the same card group before activating the selected window"
       : "Off: card click only activates the selected real window";
     button.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+
+  function setAutoParentButtonState(button, enabled) {
+    button.classList.toggle("active", enabled);
+    button.querySelector(".toggle-box").textContent = enabled ? "☑" : "□";
+    button.querySelector(".toggle-text").textContent = enabled ? "Auto Parent: on" : "Auto Parent";
+    button.title = enabled
+      ? "On: new windows automatically become children of the active card except created from radial menu"
+      : "Off: new windows open without a parent";
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+
+  function defaultAutoParentOnOpen() {
+    const activation = (window.windMgrConfig || {}).activation || {};
+    return configBool(activation.default_auto_parent_on_open, true);
   }
 
   function defaultRaiseGroupOnActivate() {

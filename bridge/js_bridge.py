@@ -146,6 +146,9 @@ class JSBridge:
             100,
             int(cfg.getfloat("activation", "active_window_show_animation_ms", fallback=650)),
         )
+        self._auto_parent_on_open = cfg.getboolean(
+            "activation", "default_auto_parent_on_open", fallback=True,
+        )
         self._launcher = AppLauncher()
         # Pending launch hints: list of {pid, project_id, parent_xid, ts}
         # Applied to the first window that opens with a matching pid.
@@ -609,6 +612,9 @@ class JSBridge:
                 self._set_auto_refresh(msg.get("enabled", False))
             elif action == "set_raise_card_group_on_card_activate":
                 self._set_raise_card_group_on_card_activate(msg.get("enabled", False))
+            elif action == "set_auto_parent_on_open":
+                self._auto_parent_on_open = bool(msg.get("enabled", True))
+                log.info("auto_parent_on_open set to %s", self._auto_parent_on_open)
             elif action == "set_interaction_active":
                 self._interaction_active = bool(msg.get("active", False))
             elif action == "card_click":
@@ -1483,11 +1489,12 @@ class JSBridge:
         log.debug("focus changed: capture previous active xid=%s new=%s", old_xid, new_xid)
         self._capture_one(old_xid, reason="focus-leave")
 
-    def _apply_launch_hint(self, record) -> None:
+    def _apply_launch_hint(self, record) -> bool:
+        """Apply a pending launch hint to record. Returns True if a hint was consumed."""
         now = time.monotonic()
         self._pending_launches = [h for h in self._pending_launches if now - h["ts"] < 10]
         if not self._pending_launches:
-            return
+            return False
         rec_classes = {
             record.wm_class.lower(),
             record.wm_class_group.lower(),
@@ -1507,7 +1514,7 @@ class JSBridge:
                     hint = self._pending_launches.pop(i)
                     break
         if hint is None:
-            return
+            return False
         project_id = hint["project_id"]
         parent_xid = hint["parent_xid"]
         if parent_xid is not None:
@@ -1526,12 +1533,32 @@ class JSBridge:
             "launch hint applied xid=%s project=%s parent=%s wm_class=%r pid=%s",
             record.xid, record.project_id, record.parent_xid, record.wm_class, record.pid,
         )
+        return True
+
+    def _apply_auto_parent(self, record) -> None:
+        """If auto-parent is on, attach the new window as a child of the last active window."""
+        parent_xid = self._valid_last_active_xid()
+        if parent_xid is None or parent_xid == record.xid:
+            return
+        parent = self._reg.get(parent_xid)
+        if parent is None or not parent.is_alive:
+            return
+        record.parent_xid = parent_xid
+        if record.xid not in parent.children_xids:
+            parent.children_xids.append(record.xid)
+        record.project_id = self._tree.get_project_id(parent)
+        log.info(
+            "auto-parent applied xid=%s parent=%s project=%s",
+            record.xid, parent_xid, record.project_id,
+        )
 
     def _on_window_opened(self, record, **_kw) -> None:
         if record is None or _is_self_record(record):
             return
         xid = int(record.xid)
-        self._apply_launch_hint(record)
+        hint_consumed = self._apply_launch_hint(record)
+        if not hint_consumed and self._auto_parent_on_open:
+            self._apply_auto_parent(record)
         self._failed_capture_attempts[xid] = 0
         delay_ms = self._new_window_capture_delay_ms
         log.debug("new window capture scheduled xid=%s delay=%sms title=%r", xid, delay_ms, record.title)

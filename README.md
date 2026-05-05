@@ -6,19 +6,28 @@
 
 ---
 
+## Platform
+
+X11 only. Requires Ubuntu 22.04+ or any GNOME/GTK desktop with WebKit2 4.1. Wayland is not supported.
+
+---
+
 ## What it does
 
 ### See everything at once
 All open windows appear as live thumbnail cards. You can zoom out to see every workspace at a glance, or zoom in to read a card's content before switching to it.
 
 ### Windows that belong together stay together
-wind_mgr automatically groups related windows — browser tabs for the same project, a terminal and its editor, a file manager and a viewer — into card groups with visible outlines. You can also drag cards manually to reorganize groups any way you want.
+Related windows are placed in card groups with a visible outline. Groups form in two ways: by launching apps from within a group (automatic), or by dragging cards manually to reorganize any way you want.
 
 ### Parent–child relationships
 Link any two windows as parent and child by dragging one card onto another. Links are drawn as curves connecting the cards, and grouped windows can be navigated as a tree. Detach or unlink at any time from the right-click menu.
 
-### Launch apps into a group
+### Launch apps into a group — with automatic parent detection
 Right-click anywhere on the canvas to open a radial app launcher. Right-click on a group to launch the app directly into that group. Favorites from your GNOME taskbar appear in the inner ring for quick access.
+
+By default, **Auto Parent** is enabled: any new window that opens — from any launcher (GNOME Activities, dock, terminal) — is automatically made a child of whichever card was active at the moment it appeared. When launching from wind_mgr's radial menu inside a group, the PID of the new process is also recorded for a more precise match. Use the **Auto Parent** toggle in the toolbar to turn this behaviour off.
+When launching from wind_mgr's radial menu inside a group, app creates new group.
 
 ### One click to switch
 Clicking a card activates that window. Enable **Raise Group** in the toolbar to bring all related windows forward together before focusing the selected one — useful when a project spans multiple windows across different monitors.
@@ -112,18 +121,13 @@ Key settings:
 | `start_hidden` | Start without showing the window |
 | `bottom_action` / `top_action` | What moving the mouse to a screen edge does (`toggle`, `show`, `hide`, `none`) |
 | `default_raise_card_group_on_card_activate` | Whether clicking a card raises its whole group |
+| `default_auto_parent_on_open` | Whether new windows are automatically made children of the active card except created from radial menu|
 | `active_refresh_interval` | How often the active window's thumbnail refreshes (seconds) |
 | `hover_refresh_interval` | How often a hovered card's thumbnail refreshes |
 | `cardGroupBoundaryShape` | Group outline shape (`convex` or `cards`) |
 | `cardArea` | Visual size of each card |
 
 All settings have inline comments in `config.ini`.
-
----
-
-## Platform
-
-X11 only. Requires Ubuntu 22.04+ or any GNOME/GTK desktop with WebKit2 4.1. Wayland is not supported.
 
 ---
 
