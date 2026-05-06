@@ -1581,7 +1581,7 @@ class JSBridge:
             return
         xid = int(record.xid)
         hint_consumed = self._apply_launch_hint(record)
-        if not hint_consumed and self._auto_parent_on_open:
+        if not hint_consumed and self._auto_parent_on_open and self._ui_visible:
             self._apply_auto_parent(record)
         self._resolve_session_parent_link(record)
         self._failed_capture_attempts[xid] = 0
