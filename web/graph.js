@@ -274,7 +274,7 @@
     _g.append("g").attr("class", "labels-layer");
     _overlay = _svg.append("g").attr("class", "viewport-overlay");
 
-    document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); hideRadialMenu(); });
+    document.addEventListener("click", () => { hideContextMenu(); hideLinkContextMenu(); hideHullContextMenu(); hideRadialMenu(); });
     document.getElementById("radial-backdrop").addEventListener("click", (e) => {
       e.stopPropagation();
       hideRadialMenu();
@@ -351,6 +351,8 @@
       setAutoParentButtonState(this, enabled);
       sendToBackend({ action: "set_auto_parent_on_open", enabled });
     });
+    document.getElementById("btn-sessions").addEventListener("click", toggleSessionsPanel);
+    document.getElementById("btn-sessions-close").addEventListener("click", closeSessionsPanel);
     document.getElementById("btn-fit").addEventListener("click", fitView);
     document.getElementById("btn-reset").addEventListener("click", resetLayout);
     _initialized = true;
@@ -522,6 +524,7 @@
       _perfReport();
       render(topologyChanged);
       updateStatus();
+      updateSessionsPanel(data.sessions || []);
     },
 
     setActiveWindow(xid) {
@@ -1218,6 +1221,7 @@
   }
 
   function ticked() {
+    resolveProjectHullOverlaps();
     renderLinksOnly();
 
     renderNodesOnly();
@@ -1258,7 +1262,8 @@
 
     const enter = hulls.enter().append("g").attr("class", "hull-group");
     enter.append("path").attr("class", "cluster-hull")
-      .on("dblclick", (e, d) => toggleProject(d.pid));
+      .on("dblclick", (e, d) => toggleProject(d.pid))
+      .on("contextmenu", (e, d) => { e.preventDefault(); e.stopPropagation(); showHullContextMenu(e, d); });
 
     const all = enter.merge(hulls);
     all.select(".cluster-hull")
@@ -1277,7 +1282,7 @@
       .on("contextmenu", (e, d) => {
         e.preventDefault();
         e.stopPropagation();
-        renameProject(d.pid);
+        showHullContextMenu(e, d);
       });
     labelsEnter.merge(labels)
       .attr("x", d => d.cx).attr("y", d => d.labelY)
@@ -1725,6 +1730,44 @@
         }
       }
     };
+  }
+
+  function resolveProjectHullOverlaps() {
+    if (_dragActive) return;
+
+    let rects = projectRects(_data.nodes.filter(n => n.is_alive), LAYOUT.hullPad);
+    if (rects.length < 2) return;
+
+    const gap = Math.max(0, LAYOUT.projectRectGap || 0);
+    for (let iter = 0; iter < 2; iter++) {
+      let moved = false;
+      for (let i = 0; i < rects.length; i++) {
+        for (let j = i + 1; j < rects.length; j++) {
+          const a = rects[i];
+          const b = rects[j];
+          const dx = b.cx - a.cx;
+          const dy = b.cy - a.cy;
+          const overlapX = (a.w + b.w) / 2 + gap - Math.abs(dx);
+          const overlapY = (a.h + b.h) / 2 + gap - Math.abs(dy);
+          if (overlapX <= 0 || overlapY <= 0) continue;
+
+          moved = true;
+          if (overlapX < overlapY) {
+            const dir = dx < 0 ? -1 : 1;
+            const shift = overlapX / 2 + 0.5;
+            a.nodes.forEach(n => { if (n.fx == null) n.x = (n.x || 0) - dir * shift; });
+            b.nodes.forEach(n => { if (n.fx == null) n.x = (n.x || 0) + dir * shift; });
+          } else {
+            const dir = dy < 0 ? -1 : 1;
+            const shift = overlapY / 2 + 0.5;
+            a.nodes.forEach(n => { if (n.fy == null) n.y = (n.y || 0) - dir * shift; });
+            b.nodes.forEach(n => { if (n.fy == null) n.y = (n.y || 0) + dir * shift; });
+          }
+        }
+      }
+      if (!moved) break;
+      rects = projectRects(_data.nodes.filter(n => n.is_alive), LAYOUT.hullPad);
+    }
   }
 
   function projectBounds(nodes) {
@@ -2483,6 +2526,37 @@
     _ctxNode = null;
   }
 
+  let _ctxHull = null;
+  function showHullContextMenu(e, d) {
+    hideContextMenu(); hideLinkContextMenu(); hideRadialMenu();
+    _ctxHull = d;
+    const title = document.getElementById("hull-ctx-title");
+    if (title) title.textContent = d.proj ? d.proj.name : "Group";
+    const menu = document.getElementById("hull-context-menu");
+    menu.style.display = "block";
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const rect = menu.getBoundingClientRect();
+    const pad = 8;
+    menu.style.left = Math.max(pad, Math.min(e.clientX, window.innerWidth - rect.width - pad)) + "px";
+    menu.style.top = Math.max(pad, Math.min(e.clientY, window.innerHeight - rect.height - pad)) + "px";
+  }
+
+  function hideHullContextMenu() {
+    document.getElementById("hull-context-menu").style.display = "none";
+    _ctxHull = null;
+  }
+
+  function ctxHullAction(action) {
+    if (!_ctxHull) return;
+    if (action === "save_close") {
+      sendToBackend({ action: "close_group", project_id: _ctxHull.pid, save: true });
+    } else if (action === "close_nosave") {
+      sendToBackend({ action: "close_group", project_id: _ctxHull.pid, save: false });
+    }
+    hideHullContextMenu();
+  }
+
   let _ctxLink = null;
   function showLinkContextMenu(e, d) {
     hideContextMenu();
@@ -2733,9 +2807,121 @@
     _hideRadialLabel();
   }
 
+  // ── Saved sessions panel ──────────────────────────────────────────────────
+  let _sessionsPanelOpen = false;
+
+  function toggleSessionsPanel() {
+    _sessionsPanelOpen ? closeSessionsPanel() : openSessionsPanel();
+  }
+
+  function openSessionsPanel() {
+    _sessionsPanelOpen = true;
+    document.getElementById("sessions-panel").classList.remove("sessions-hidden");
+  }
+
+  function closeSessionsPanel() {
+    _sessionsPanelOpen = false;
+    document.getElementById("sessions-panel").classList.add("sessions-hidden");
+  }
+
+  function updateSessionsPanel(sessions) {
+    const badge = document.getElementById("sessions-badge");
+    const list = document.getElementById("sessions-list");
+    const empty = document.getElementById("sessions-empty");
+    badge.textContent = sessions.length;
+    badge.style.display = sessions.length > 0 ? "" : "none";
+    if (sessions.length === 0) {
+      list.innerHTML = "";
+      empty.style.display = "";
+      return;
+    }
+    empty.style.display = "none";
+    list.innerHTML = "";
+    sessions.forEach(s => list.appendChild(_buildSessionItem(s)));
+  }
+
+  function _buildSessionItem(s) {
+    const item = document.createElement("div");
+    item.className = "session-item";
+
+    const header = document.createElement("div");
+    header.className = "session-item-header";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "session-name";
+    nameInput.value = s.name || "Group";
+    nameInput.addEventListener("change", () => {
+      sendToBackend({ action: "rename_session", session_id: s.id, name: nameInput.value });
+    });
+
+    const date = document.createElement("span");
+    date.className = "session-date";
+    date.textContent = _formatSessionDate(s.saved_at);
+
+    header.appendChild(nameInput);
+    header.appendChild(date);
+    item.appendChild(header);
+
+    const appsRow = document.createElement("div");
+    appsRow.className = "session-apps";
+    (s.apps || []).forEach(app => {
+      const chip = document.createElement("div");
+      chip.className = "session-app-chip";
+      if (app.icon_url) {
+        const img = document.createElement("img");
+        img.src = app.icon_url;
+        img.alt = "";
+        chip.appendChild(img);
+      }
+      const label = document.createElement("span");
+      label.textContent = app.title || app.app_name || app.app_id || "?";
+      chip.appendChild(label);
+      appsRow.appendChild(chip);
+    });
+    item.appendChild(appsRow);
+
+    const actions = document.createElement("div");
+    actions.className = "session-actions";
+
+    const launchBtn = document.createElement("button");
+    launchBtn.className = "session-btn primary";
+    launchBtn.textContent = "▶ Launch";
+    launchBtn.addEventListener("click", () => {
+      sendToBackend({ action: "launch_session", session_id: s.id });
+      closeSessionsPanel();
+    });
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "session-btn danger";
+    dismissBtn.textContent = "✕ Remove";
+    dismissBtn.addEventListener("click", () => {
+      sendToBackend({ action: "dismiss_session", session_id: s.id });
+    });
+
+    actions.appendChild(launchBtn);
+    actions.appendChild(dismissBtn);
+    item.appendChild(actions);
+    return item;
+  }
+
+  function _formatSessionDate(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diffH = (now - d) / 3600000;
+      if (diffH < 1) return "just now";
+      if (diffH < 24) return `${Math.floor(diffH)}h ago`;
+      if (diffH < 48) return "yesterday";
+      return d.toLocaleDateString();
+    } catch { return ""; }
+  }
+
   // ── Boot ──────────────────────────────────────────────────────────────────
   window.ctxAction = ctxAction;
   window.ctxLinkAction = ctxLinkAction;
+  window.ctxHullAction = ctxHullAction;
   document.addEventListener("DOMContentLoaded", init);
 
 })();

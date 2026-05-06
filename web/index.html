@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>wind_mgr</title>
-  <link rel="stylesheet" href="style.css?v=20260504-0110">
+  <link rel="stylesheet" href="style.css?v=20260506-0279">
 </head>
 <body>
 
@@ -21,7 +21,18 @@
     <span class="toggle-box">☑</span><span class="toggle-text">Auto Parent</span>
   </button>
   <span class="spacer"></span>
+  <button class="tb-btn" id="btn-sessions" title="Saved groups">⊞ Saved Groups <span id="sessions-badge" class="sessions-badge" style="display:none">0</span></button>
   <span class="status-text" id="status-text">—</span>
+</div>
+
+<!-- Saved sessions panel -->
+<div id="sessions-panel" class="sessions-panel sessions-hidden">
+  <div class="sessions-panel-header">
+    <span>Saved Groups</span>
+    <button class="sessions-close-btn" id="btn-sessions-close">✕</button>
+  </div>
+  <div id="sessions-list" class="sessions-list"></div>
+  <div id="sessions-empty" class="sessions-empty">No saved groups yet.<br>Close a group to save it here.</div>
 </div>
 
 <div id="graph-container">
@@ -55,6 +66,14 @@
   <div id="radial-label"></div>
 </div>
 
+<!-- Hull (group) context menu -->
+<div id="hull-context-menu">
+  <div class="menu-header" id="hull-ctx-title">Group</div>
+  <div class="menu-separator"></div>
+  <div class="menu-item" onclick="ctxHullAction('save_close')">💾 Save &amp; Close group</div>
+  <div class="menu-item" onclick="ctxHullAction('close_nosave')">✕ Close without saving</div>
+</div>
+
 <!-- Link context menu -->
 <div id="link-context-menu">
   <div class="menu-header">Link actions</div>
@@ -63,6 +82,6 @@
 
 <script src="d3.min.js?v=20260501-0108"></script>
 <script src="config-loader.js?v=20260503-0115"></script>
-<script src="graph.js?v=20260506-0277"></script>
+<script src="graph.js?v=20260506-0279"></script>
 </body>
 </html>

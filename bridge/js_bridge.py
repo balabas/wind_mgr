@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Callable
 
 import gi
@@ -14,7 +15,9 @@ from gi.repository import GLib, WebKit2
 from core.activity_stats import ActivityStats
 from core.app_launcher import AppLauncher
 from core.config import read_config
-from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED, EVT_WINDOW_CLOSED, EVT_WINDOW_OPENED
+from core.events import bus, EVT_FOCUS_CHANGED, EVT_GRAPH_UPDATED, EVT_WINDOW_CLOSED, EVT_WINDOW_CLOSING, EVT_WINDOW_OPENED
+from core.session_collector import collect_launch_info
+from core.session_store import SessionStore
 from core.relationship import RelationshipTree
 
 if TYPE_CHECKING:
@@ -150,11 +153,22 @@ class JSBridge:
             "activation", "default_auto_parent_on_open", fallback=True,
         )
         self._launcher = AppLauncher()
+        self._session_store = SessionStore()
         # Pending launch hints: list of {pid, project_id, parent_xid, ts}
         # Applied to the first window that opens with a matching pid.
         self._pending_launches: list[dict] = []
+        # project_id -> list of WindowRecord snapshots taken just before windows close
+        self._pending_group_closes: dict[str, list] = {}
+        self._skip_auto_save: set[str] = set()
+        self._closing_group_xids: dict[str, set[int]] = {}
+        # Session relaunch link restoration: pid -> parent_pid, pid -> xid, pending links
+        self._session_pids: set[int] = set()  # all pids from current session launch
+        self._session_pid_to_parent_pid: dict[int, int] = {}
+        self._session_pid_to_xid: dict[int, int] = {}
+        self._session_pending_links: list[tuple[int, int]] = []  # (child_xid, parent_pid)
         bus.subscribe(EVT_GRAPH_UPDATED, self._on_graph_updated)
         bus.subscribe(EVT_FOCUS_CHANGED, self._on_focus_changed)
+        bus.subscribe(EVT_WINDOW_CLOSING, self._on_window_closing)
         bus.subscribe(EVT_WINDOW_OPENED, self._on_window_opened)
         bus.subscribe(EVT_WINDOW_CLOSED, self._on_window_closed)
 
@@ -468,7 +482,9 @@ class JSBridge:
 
         active_xid = self._active_window_xid(allow_fallback=True)
 
-        return {"nodes": nodes, "edges": edges, "projects": projects, "active_xid": active_xid}
+        sessions = self._session_store.load_all()
+        return {"nodes": nodes, "edges": edges, "projects": projects,
+                "active_xid": active_xid, "sessions": sessions}
 
     def _window_monitor_orientations(self) -> dict[int, str]:
         try:
@@ -615,6 +631,14 @@ class JSBridge:
             elif action == "set_auto_parent_on_open":
                 self._auto_parent_on_open = bool(msg.get("enabled", True))
                 log.info("auto_parent_on_open set to %s", self._auto_parent_on_open)
+            elif action == "close_group":
+                self._close_group(str(msg.get("project_id", "")), bool(msg.get("save", True)))
+            elif action == "launch_session":
+                self._launch_session(str(msg.get("session_id", "")))
+            elif action == "dismiss_session":
+                self._dismiss_session(str(msg.get("session_id", "")))
+            elif action == "rename_session":
+                self._rename_session(str(msg.get("session_id", "")), str(msg.get("name", "")))
             elif action == "set_interaction_active":
                 self._interaction_active = bool(msg.get("active", False))
             elif action == "card_click":
@@ -1559,6 +1583,7 @@ class JSBridge:
         hint_consumed = self._apply_launch_hint(record)
         if not hint_consumed and self._auto_parent_on_open:
             self._apply_auto_parent(record)
+        self._resolve_session_parent_link(record)
         self._failed_capture_attempts[xid] = 0
         delay_ms = self._new_window_capture_delay_ms
         log.debug("new window capture scheduled xid=%s delay=%sms title=%r", xid, delay_ms, record.title)
@@ -1571,12 +1596,187 @@ class JSBridge:
         self._capture_one(xid, reason="new-window", force=True)
         return False
 
+    def _resolve_session_parent_link(self, record) -> None:
+        pid = record.pid
+        if pid not in self._session_pids:
+            return
+        self._session_pids.discard(pid)
+        self._session_pid_to_xid[pid] = record.xid
+        # Apply this window's own parent link if it has one
+        parent_pid = self._session_pid_to_parent_pid.pop(pid, None)
+        if parent_pid is not None:
+            parent_xid = self._session_pid_to_xid.get(parent_pid)
+            if parent_xid is not None:
+                self._apply_session_parent_link(record.xid, parent_xid)
+            else:
+                self._session_pending_links.append((record.xid, parent_pid))
+        # Resolve any children already waiting for this window
+        still_pending = []
+        for child_xid, wait_pid in self._session_pending_links:
+            if wait_pid == pid:
+                self._apply_session_parent_link(child_xid, record.xid)
+            else:
+                still_pending.append((child_xid, wait_pid))
+        self._session_pending_links = still_pending
+
+    def _apply_session_parent_link(self, child_xid: int, parent_xid: int) -> None:
+        child = self._reg.get(child_xid)
+        parent = self._reg.get(parent_xid)
+        if child is None or parent is None or not child.is_alive or not parent.is_alive:
+            return
+        child.parent_xid = parent_xid
+        if child_xid not in parent.children_xids:
+            parent.children_xids.append(child_xid)
+        log.info("session link restored: child=%s parent=%s", child_xid, parent_xid)
+        self._reg.save()
+        self.push_graph()
+
+    def _on_window_closing(self, xid: int, record, **_kw) -> None:
+        """Snapshot the group before registry.remove() restructures the tree."""
+        if record is None or _is_self_record(record):
+            return
+        project_id = self._tree.get_project_id(record)
+        if project_id in self._skip_auto_save:
+            return
+        members = [r for r in self._reg.all_alive()
+                   if self._tree.get_project_id(r) == project_id and not _is_self_record(r)]
+        if not members:
+            return
+        self._pending_group_closes[project_id] = members
+        log.debug("group-close snapshot project=%s members=%d", project_id, len(members))
+
     def _on_window_closed(self, xid: int, **_kw) -> None:
         self._capture_queue.pop(int(xid), None)
         self._last_capture_at.pop(int(xid), None)
         self._last_capture_reason.pop(int(xid), None)
         self._successful_thumb_xids.discard(int(xid))
         self._failed_capture_attempts.pop(int(xid), None)
+        # Check if any snapshotted group is now fully closed
+        for project_id, members in list(self._pending_group_closes.items()):
+            still_alive = any(
+                (r := self._reg.get(m.xid)) is not None and r.is_alive
+                for m in members
+            )
+            if not still_alive:
+                self._save_group_session(project_id, members)
+                del self._pending_group_closes[project_id]
+                self._skip_auto_save.discard(project_id)
+        # Clean up _skip_auto_save for explicit close_group once all windows are dead
+        for project_id, xid_set in list(self._closing_group_xids.items()):
+            xid_set.discard(xid)
+            if not xid_set or not any(
+                (r := self._reg.get(x)) is not None and r.is_alive for x in xid_set
+            ):
+                self._skip_auto_save.discard(project_id)
+                del self._closing_group_xids[project_id]
+
+    def _save_group_session(self, project_id: str, members: list) -> None:
+        xid_to_idx = {r.xid: i for i, r in enumerate(members)}
+        apps = []
+        for r in members:
+            try:
+                info = collect_launch_info(r, self._launcher)
+                # Save relative parent index so links can be restored on relaunch
+                info["parent_app_idx"] = xid_to_idx.get(r.parent_xid)
+                apps.append(info)
+            except Exception:
+                log.warning("collect_launch_info failed for xid=%s", r.xid, exc_info=True)
+        if not apps:
+            return
+        # Derive group name from the project's root or first member
+        root = self._reg.get(int(project_id)) if project_id.isdigit() else None
+        name = (
+            (root.metadata.get("custom_project_name") if root else None)
+            or (root.metadata.get("domain") if root else None)
+            or (root.app_name if root else None)
+            or apps[0].get("title", "")
+            or "Group"
+        )
+        session = self._session_store.save(name=name, project_id=project_id, apps=apps)
+        log.info("group session saved: %s (%d apps)", session["id"], len(apps))
+        self.push_graph()
+
+    # ── Session actions ───────────────────────────────────────────────────────
+
+    def _launch_session(self, session_id: str) -> None:
+        sessions = self._session_store.load_all()
+        session = next((s for s in sessions if s["id"] == session_id), None)
+        if not session:
+            log.warning("launch_session: unknown id %r", session_id)
+            return
+        # All relaunched windows share a new project_id so they land in the same group
+        new_project_id = f"session-{uuid.uuid4().hex[:8]}"
+        apps = session.get("apps", [])
+        # Launch all apps, record pid per app index
+        app_pids: dict[int, int] = {}  # app_idx -> pid
+        for i, app_info in enumerate(apps):
+            app_id = app_info.get("app_id", "")
+            args = app_info.get("args", [])
+            if not app_id:
+                log.warning("launch_session: no app_id for %r", app_info.get("title"))
+                continue
+            pid = self._launcher.launch(app_id, extra_args=args or None)
+            log.info("launch_session: app_id=%r args=%r pid=%s", app_id, args, pid)
+            if pid:
+                app_pids[i] = pid
+        # Build parent link map: child_pid -> parent_pid
+        for i, pid in app_pids.items():
+            parent_idx = apps[i].get("parent_app_idx")
+            if parent_idx is not None and parent_idx in app_pids:
+                self._session_pid_to_parent_pid[pid] = app_pids[parent_idx]
+        # Register all session pids for link resolution tracking
+        self._session_pids.update(app_pids.values())
+        # Register pending launches
+        launched = len(app_pids)
+        for i, pid in app_pids.items():
+            self._pending_launches.append({
+                "project_id": new_project_id,
+                "parent_xid": None,
+                "wm_class": apps[i].get("wm_class", "").lower(),
+                "pid": pid,
+                "ts": time.monotonic(),
+            })
+        # Remove from panel immediately (will re-save when user closes the group)
+        self._session_store.delete(session_id)
+        self.push_graph()
+        log.info("session launched: %s (%d apps)", session_id, launched)
+
+    def _dismiss_session(self, session_id: str) -> None:
+        self._session_store.delete(session_id)
+        self.push_graph()
+
+    def _rename_session(self, session_id: str, name: str) -> None:
+        if self._session_store.rename(session_id, name):
+            self.push_graph()
+
+    def _close_group(self, project_id: str, save: bool) -> None:
+        members = [r for r in self._reg.all_alive()
+                   if self._tree.get_project_id(r) == project_id and not _is_self_record(r)]
+        if not members:
+            log.warning("close_group: no alive members for project %r", project_id)
+            return
+        # Block EVT_WINDOW_CLOSING from re-adding this project to pending saves.
+        self._skip_auto_save.add(project_id)
+        self._pending_group_closes.pop(project_id, None)
+        if save:
+            self._save_group_session(project_id, members)
+        # Track member xids so _on_window_closed can clear _skip_auto_save when done.
+        self._closing_group_xids[project_id] = {r.xid for r in members}
+        # Close all windows via Wnck
+        try:
+            import gi
+            gi.require_version("Wnck", "3.0")
+            from gi.repository import Wnck
+            screen = Wnck.Screen.get_default()
+            screen.force_update()
+            xid_set = {r.xid for r in members}
+            ts = int(GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
+            for window in screen.get_windows():
+                if int(window.get_xid()) in xid_set:
+                    window.close(ts)
+            log.info("close_group: closed %d windows project=%s save=%s", len(members), project_id, save)
+        except Exception:
+            log.exception("close_group: failed to close windows for project %r", project_id)
 
     def _start_thumbnail_refresh(self) -> None:
         if self._active_refresh_ms > 0 and self._active_refresh_tag is None:

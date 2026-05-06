@@ -5,6 +5,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
+EVT_WINDOW_CLOSING = "window_closing"   # fires before registry.remove(); tree still intact
 EVT_WINDOW_OPENED  = "window_opened"
 EVT_WINDOW_CLOSED  = "window_closed"
 EVT_FOCUS_CHANGED  = "focus_changed"

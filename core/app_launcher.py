@@ -136,7 +136,28 @@ class AppLauncher:
     def get_app(self, app_id: str) -> dict | None:
         return self._apps.get(app_id)
 
-    def launch(self, app_id: str) -> int | None:
+    def find_app_for_window(self, wm_class: str, wm_class_group: str, app_name: str) -> str:
+        """Return the best-matching app_id for an open window, or ''."""
+        candidates = {wm_class.lower(), wm_class_group.lower(), app_name.lower()} - {""}
+        # 1. Exact StartupWMClass match
+        for app_id, app in self._apps.items():
+            wmc = app.get("wm_class", "").lower()
+            if wmc and wmc in candidates:
+                return app_id
+        # 2. Desktop file stem matches wm_class / app_name
+        for app_id, app in self._apps.items():
+            stem = app_id.removesuffix(".desktop").lower()
+            if stem and stem in candidates:
+                return app_id
+        # 3. App display name matches app_name case-insensitively
+        app_name_lc = app_name.lower()
+        if app_name_lc:
+            for app_id, app in self._apps.items():
+                if app.get("name", "").lower() == app_name_lc:
+                    return app_id
+        return ""
+
+    def launch(self, app_id: str, extra_args: list[str] | None = None) -> int | None:
         """Launch app and return the process PID, or None on failure."""
         app = self._apps.get(app_id)
         if not app:
@@ -146,6 +167,8 @@ class AppLauncher:
         if not argv:
             log.warning("AppLauncher: empty exec for %r", app_id)
             return None
+        if extra_args:
+            argv = argv + [str(a) for a in extra_args]
         try:
             proc = subprocess.Popen(argv, start_new_session=True,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

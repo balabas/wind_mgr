@@ -6,7 +6,7 @@ import gi
 gi.require_version("Wnck", "3.0")
 from gi.repository import Wnck, GLib
 
-from .events import bus, EVT_WINDOW_OPENED, EVT_WINDOW_CLOSED, EVT_FOCUS_CHANGED, EVT_TITLE_CHANGED, EVT_GRAPH_UPDATED
+from .events import bus, EVT_WINDOW_CLOSING, EVT_WINDOW_OPENED, EVT_WINDOW_CLOSED, EVT_FOCUS_CHANGED, EVT_TITLE_CHANGED, EVT_GRAPH_UPDATED
 from .window_record import WindowRecord
 from .window_registry import WindowRegistry
 
@@ -112,6 +112,7 @@ class ActivityWatcher:
         if record is None or not record.is_alive or _is_self_record(record):
             log.debug("Ignoring close for untracked window xid=%d", xid)
             return
+        bus.emit(EVT_WINDOW_CLOSING, xid=xid, record=record)
         self._registry.remove(xid)
         if self._active_xid == xid:
             self._active_xid = None
