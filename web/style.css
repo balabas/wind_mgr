@@ -149,6 +149,13 @@ svg#graph {
 .node-thumb {
   clip-path: inset(0 round 8px);
 }
+.node-icon-bg {
+  fill: rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+.node-icon {
+  pointer-events: none;
+}
 
 /* During pan/zoom: freeze overlay, skip hit-testing, use fast pixel rendering */
 svg#graph.is-panning .node-g.active-window .active-overlay,

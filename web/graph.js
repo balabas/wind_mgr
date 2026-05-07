@@ -171,6 +171,8 @@
     clickMoveTolerancePx: 8,
     clickHoldTimeoutMs: 250,
     zoomWheelSensitivity: 0.002,
+    cardIconSize: 20,
+    cardIconPad: 2,
   };
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -913,7 +915,8 @@
       .attr("class", "node-thumb")
       .attr("preserveAspectRatio", "xMidYMid meet");
     nodeEnter.append("rect").attr("class", "active-overlay");
-    nodeEnter.append("image").attr("class", "node-icon").attr("width", 20).attr("height", 20);
+    nodeEnter.append("rect").attr("class", "node-icon-bg").attr("rx", 4);
+    nodeEnter.append("image").attr("class", "node-icon");
     nodeEnter.append("title");
     nodeEnter.append("path").attr("class", "node-title-bg");
     nodeEnter.append("text").attr("class", "node-title").attr("text-anchor", "middle").attr("x", 0);
@@ -1012,12 +1015,18 @@
     // Thumb placeholder emoji when no image
     // (handled by SVG text fallback if thumb fails — use onerror equivalent via error event)
 
-    // App icon
+    // App icon — top-right corner with dark background
     const hasIcon = !!d.icon_url;
+    const isz = LAYOUT.cardIconSize, ipad = LAYOUT.cardIconPad;
+    const iconX = hw - isz - ipad, iconY = -hh + ipad;
+    g.select(".node-icon-bg")
+      .attr("x", iconX - ipad).attr("y", iconY - ipad)
+      .attr("width", isz + ipad * 2).attr("height", isz + ipad * 2)
+      .style("display", hasIcon ? null : "none");
     g.select(".node-icon")
       .attr("href", d.icon_url || "")
-      .attr("x", hw - 24)
-      .attr("y", hh - 24)
+      .attr("x", iconX).attr("y", iconY)
+      .attr("width", isz).attr("height", isz)
       .style("display", hasIcon ? null : "none");
 
     // Title background bar — rounded only at bottom, same radius/coords as card
@@ -1071,11 +1080,19 @@
       }
       if (Object.prototype.hasOwnProperty.call(item, "icon_url")) {
         const size = cardSize(node);
+        const hw = size.w / 2, hh = size.h / 2;
+        const isz = LAYOUT.cardIconSize, ipad = LAYOUT.cardIconPad;
+        const ix = hw - isz - ipad, iy = -hh + ipad;
+        const hasIcon = !!node.icon_url;
+        g.select(".node-icon-bg")
+          .attr("x", ix - ipad).attr("y", iy - ipad)
+          .attr("width", isz + ipad * 2).attr("height", isz + ipad * 2)
+          .style("display", hasIcon ? null : "none");
         g.select(".node-icon")
           .attr("href", node.icon_url || "")
-          .attr("x", size.w / 2 - 24)
-          .attr("y", size.h / 2 - 24)
-          .style("display", node.icon_url ? null : "none");
+          .attr("x", ix).attr("y", iy)
+          .attr("width", isz).attr("height", isz)
+          .style("display", hasIcon ? null : "none");
       }
     });
   }
