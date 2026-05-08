@@ -726,7 +726,8 @@ class JSBridge:
                 # Wnck expects a 32-bit X timestamp, not Unix epoch time.
                 ts = (GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
             if self._raise_card_group_on_card_activate:
-                self._raise_card_group_then_activate(int(xid), windows_by_xid, int(ts))
+                stacked_xids = [int(w.get_xid()) for w in screen.get_windows_stacked()]
+                self._raise_card_group_then_activate(int(xid), windows_by_xid, stacked_xids, int(ts))
             else:
                 target.activate(ts)
                 x, y, width, height = target.get_geometry()
@@ -734,7 +735,8 @@ class JSBridge:
             return
         log.warning("activate: window xid=%d not found", xid)
 
-    def _raise_card_group_then_activate(self, xid: int, windows_by_xid: dict[int, Any], ts: int) -> None:
+    def _raise_card_group_then_activate(self, xid: int, windows_by_xid: dict[int, Any],
+                                        stacked_xids: list[int], ts: int) -> None:
         record = self._reg.get(xid)
         target = windows_by_xid.get(xid)
         if record is None or target is None:
@@ -743,18 +745,18 @@ class JSBridge:
             return
 
         project_id = self._tree.get_project_id(record)
-        card_group_records = [
-            r for r in self._reg.all_alive()
+        group_xid_set = {
+            r.xid for r in self._reg.all_alive()
             if r.xid != xid and self._tree.get_project_id(r) == project_id and r.xid in windows_by_xid
-        ]
-        card_group_records.sort(key=lambda r: (r.last_focused_at, r.xid))
-        raise_xids = [r.xid for r in card_group_records]
+        }
+
+        # Preserve the actual current X11 Z-order (stacked_xids is bottom→top).
+        # Raising in this order keeps relative stacking intact; target goes last.
+        raise_xids = [x for x in stacked_xids if x in group_xid_set]
+
         log.info(
             "activate card group: selected=%s project=%s method=%s raise=%s",
-            xid,
-            project_id,
-            self._raise_card_group_method,
-            raise_xids,
+            xid, project_id, self._raise_card_group_method, raise_xids,
         )
 
         if self._raise_card_group_method == "activate":
@@ -765,7 +767,7 @@ class JSBridge:
         else:
             self._restack_x11_windows(raise_xids)
 
-        # Selected window is activated last, so it should finish focused/topmost.
+        # Target goes last — ends up topmost and focused.
         self._activate_wnck_window(target, ts, flash=True)
 
     def _activate_wnck_window(self, window: Any, ts: int, *, flash: bool) -> None:
@@ -1581,7 +1583,7 @@ class JSBridge:
             return
         xid = int(record.xid)
         hint_consumed = self._apply_launch_hint(record)
-        if not hint_consumed and self._auto_parent_on_open and self._ui_visible:
+        if not hint_consumed and self._auto_parent_on_open:
             self._apply_auto_parent(record)
         self._resolve_session_parent_link(record)
         self._failed_capture_attempts[xid] = 0
@@ -1986,8 +1988,15 @@ class JSBridge:
         self._capture.capture_async(xid, callback=_done)
         if xid not in self._icon_captured_xids and not self._capture.icon_path(xid).exists():
             self._icon_captured_xids.add(xid)
-            def _capture_icon_once() -> bool:
-                self._capture.capture_icon(xid)
+            record = self._reg.get(xid)
+            desktop_icon = self._launcher.find_desktop_icon(
+                record.wm_class if record else "",
+                record.wm_class_group if record else "",
+                record.app_name if record else "",
+                size=self._capture.icon_size,
+            ) if record else ""
+            def _capture_icon_once(dicon: str = desktop_icon) -> bool:
+                self._capture.capture_icon(xid, desktop_icon_path=dicon)
                 return False
             GLib.idle_add(_capture_icon_once)
 

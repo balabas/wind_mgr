@@ -55,6 +55,10 @@ class ScreenshotCapture:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
+    @property
+    def icon_size(self) -> int:
+        return self._icon_size
+
     def thumb_path(self, xid: int) -> Path:
         return THUMBS_DIR / f"{xid}.png"
 
@@ -75,12 +79,25 @@ class ScreenshotCapture:
         """Schedule screenshot capture. callback(success) called on GTK main thread."""
         self._executor.submit(self._capture_worker, xid, callback)
 
-    def capture_icon(self, xid: int) -> bool:
-        """Save the Wnck app icon on GTK main thread.
+    def capture_icon(self, xid: int, desktop_icon_path: str = "") -> bool:
+        """Save the app icon on GTK main thread.
 
-        Return ``False`` so the method is safe if passed directly to
-        GLib.idle_add; GLib treats ``True`` as "repeat forever".
+        Prefers ``desktop_icon_path`` (from the .desktop file) over the Wnck
+        window icon, which is often a generic JVM/platform icon for JetBrains apps.
+        Return ``False`` so the method is safe if passed directly to GLib.idle_add.
         """
+        try:
+            if desktop_icon_path:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(desktop_icon_path)
+                if pixbuf:
+                    scaled = pixbuf.scale_simple(
+                        self._icon_size, self._icon_size,
+                        GdkPixbuf.InterpType.BILINEAR,
+                    )
+                    scaled.savev(str(self.icon_path(xid)), "png", [], [])
+                    return False
+        except Exception:
+            log.debug("Failed to load desktop icon xid=%d path=%r", xid, desktop_icon_path, exc_info=True)
         try:
             screen = Wnck.Screen.get_default()
             for w in screen.get_windows():

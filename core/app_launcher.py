@@ -157,6 +157,14 @@ class AppLauncher:
                     return app_id
         return ""
 
+    def find_desktop_icon(self, wm_class: str, wm_class_group: str, app_name: str, size: int = 48) -> str:
+        """Return the filesystem path of the best desktop-file icon for a window, or ''."""
+        app_id = self.find_app_for_window(wm_class, wm_class_group, app_name)
+        if not app_id:
+            return ""
+        icon_name = (self._apps.get(app_id) or {}).get("icon", "")
+        return _find_icon(icon_name, size)
+
     def launch(self, app_id: str, extra_args: list[str] | None = None) -> int | None:
         """Launch app and return the process PID, or None on failure."""
         app = self._apps.get(app_id)

@@ -106,7 +106,7 @@
   let _lastLivePreviewSentAt = 0;
   let _showActiveFlyState = null;
   let _appList = [];           // [{id, name, icon_url, favorite}]
-  let _pendingLaunchPos = null; // {x, y} graph coords for next new card
+  let _pendingLaunchPos = null; // {x, y, ts} graph coords for next new card
   let _linkRouteOffsets = {};
   let _currentLinkData = [];
   let _prelayoutInitializedProjects = new Set();
@@ -843,9 +843,8 @@
     movedToProjects.forEach(pid => _prelayoutInitializedProjects.delete(pid));
 
     // Second pass: seed new/moved nodes
-    const pendingPos = _pendingLaunchPos;
-    _pendingLaunchPos = null;
-    let pendingUsed = false;
+    // Expire stale pending position (app failed to open or took too long).
+    if (_pendingLaunchPos && Date.now() - _pendingLaunchPos.ts > 30000) _pendingLaunchPos = null;
     nodes.forEach(n => {
       if (n.x != null) return;
       const par = xidToNode[n.parent_xid];
@@ -855,11 +854,13 @@
         const gapY = LAYOUT.hierarchyGap != null ? LAYOUT.hierarchyGap : 160;
         n.x = par.x + (Math.random() - 0.5) * 80;
         n.y = par.y + gapY;
-      } else if (pendingPos && !pendingUsed) {
-        // No parent: place at the click/launch position.
-        n.x = pendingPos.x;
-        n.y = pendingPos.y;
-        pendingUsed = true;
+      } else if (_pendingLaunchPos) {
+        // No parent: place at the click/launch position, then consume.
+        n.x = _pendingLaunchPos.x;
+        n.y = _pendingLaunchPos.y;
+        // Also set as project anchor so prelayout uses the same origin, not screen center.
+        _projectAnchors[n.project_id] = { x: _pendingLaunchPos.x, y: _pendingLaunchPos.y };
+        _pendingLaunchPos = null;
       } else {
         const base = anchor || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
         n.x = base.x + (Math.random() - 0.5) * 100;
@@ -2802,7 +2803,7 @@
 
   function _launchApp(appId) {
     if (_radialGraphPos) {
-      _pendingLaunchPos = { x: _radialGraphPos.x, y: _radialGraphPos.y };
+      _pendingLaunchPos = { x: _radialGraphPos.x, y: _radialGraphPos.y, ts: Date.now() };
     }
     const msg = { action: "launch_app", app_id: appId };
     if (_radialContext) {
