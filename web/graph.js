@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const GRAPH_VERSION = "20260504-0260";
+  const GRAPH_VERSION = "20260509-0296";
 
   // ── State ────────────────────────────────────────────────────────────────
   let _data = { nodes: [], edges: [], projects: [], active_xid: null };
@@ -871,6 +871,10 @@
     if (topologyChanged && !_dragActive && LAYOUT.hierarchyPrelayoutEnabled !== false) {
       const projectIds = Array.from(new Set(nodes.map(n => n.project_id)));
       const uninitialized = new Set(projectIds.filter(pid => !_prelayoutInitializedProjects.has(pid)));
+      // Skip prelayout for projects where every node already has a position — these
+      // are drag-moved nodes that should stay where the user dropped them.
+      const nodesWithoutPos = new Set(nodes.filter(n => n.x == null).map(n => n.project_id));
+      uninitialized.forEach(pid => { if (!nodesWithoutPos.has(pid)) uninitialized.delete(pid); });
       if (uninitialized.size) {
         applyHierarchyPrelayout(nodes, edges, xidToNode, uninitialized);
       }
@@ -993,7 +997,8 @@
 
     const size = cardSize(d);
     const hw = size.w / 2, hh = size.h / 2;
-    const displayTitle = d.card_name || d.tab_title || d.project_name || d.title;
+    const _browserTabTitle = (d.app_type === 'chrome' || d.app_type === 'browser') ? d.tab_title : null;
+    const displayTitle = d.card_name || _browserTabTitle || d.project_name || d.desktop_name || d.wm_class_group || d.title;
     const truncTitle = displayTitle.length > 24 ? displayTitle.slice(0, 23) + "…" : displayTitle;
 
     g.select(".node-bg")
@@ -2606,10 +2611,10 @@
     if (!_ctxNode) return;
     if (action === "activate") {
       sendToBackend({ action: "activate", xid: _ctxNode.xid });
+    } else if (action === "close_window") {
+      sendToBackend({ action: "close_window", xid: _ctxNode.xid });
     } else if (action.startsWith("place_")) {
       sendToBackend({ action: "place_window", xid: _ctxNode.xid, placement: action.slice("place_".length) });
-    } else if (action === "refresh_thumb") {
-      sendToBackend({ action: "refresh_thumb", xid: _ctxNode.xid });
     } else if (action === "detach") {
       sendToBackend({ action: "remove_link", xid: _ctxNode.xid });
     } else if (action === "unlink_children") {

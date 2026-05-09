@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
@@ -451,11 +452,15 @@ class JSBridge:
                 })
                 proj_id_set.add(pid)
 
+            _desktop_app = self._launcher.get_app(
+                self._launcher.find_app_for_window(r.wm_class, r.wm_class_group, r.app_name))
             nodes.append({
                 "xid": r.xid,
                 "title": r.title,
                 "app_type": r.app_type,
                 "app_name": r.app_name,
+                "desktop_name": _desktop_app["name"] if _desktop_app else "",
+                "wm_class_group": re.sub(r"[-_]+", " ", r.wm_class_group).strip(),
                 "card_name": r.metadata.get("card_name", ""),
                 "tab_title": r.metadata.get("tab_title", ""),
                 "domain": r.metadata.get("domain", ""),
@@ -596,6 +601,8 @@ class JSBridge:
         try:
             if action == "activate":
                 self._activate_window(msg["xid"])
+            elif action == "close_window":
+                self._close_single_window(int(msg["xid"]))
             elif action == "move_node":
                 self._move_node(
                     int(msg["xid"]),
@@ -734,6 +741,20 @@ class JSBridge:
                 GLib.timeout_add(140, flash_window_rect, x, y, width, height)
             return
         log.warning("activate: window xid=%d not found", xid)
+
+    def _close_single_window(self, xid: int) -> None:
+        import gi
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Wnck
+        screen = Wnck.Screen.get_default()
+        screen.force_update()
+        for window in screen.get_windows():
+            if int(window.get_xid()) == xid:
+                ts = int(GLib.get_monotonic_time() // 1000) & 0xFFFFFFFF
+                window.close(ts)
+                log.info("close_window: xid=%d", xid)
+                return
+        log.warning("close_window: xid=%d not found", xid)
 
     def _raise_card_group_then_activate(self, xid: int, windows_by_xid: dict[int, Any],
                                         stacked_xids: list[int], ts: int) -> None:

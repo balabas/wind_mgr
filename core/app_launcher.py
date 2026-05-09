@@ -32,11 +32,20 @@ _ICON_EXTS = ("png", "svg", "xpm")
 
 
 def _find_icon(name: str, size: int = 48) -> str:
+    # Also search AppImage mounts for icons.
+    appimage_icon_bases = [
+        (mount + "usr/share/icons/hicolor", "{size}x{size}/apps")
+        for mount in glob.glob("/tmp/.mount_*/")
+    ] + [
+        (mount, "")
+        for mount in glob.glob("/tmp/.mount_*/")
+    ]
+    icon_bases = _ICON_BASES + appimage_icon_bases
     if not name:
         return ""
     if os.path.isabs(name) and os.path.exists(name):
         return name
-    for base, sub_tmpl in _ICON_BASES:
+    for base, sub_tmpl in icon_bases:
         sub = sub_tmpl.format(size=size) if sub_tmpl else ""
         directory = os.path.join(base, sub) if sub else base
         for ext in _ICON_EXTS:
@@ -64,6 +73,9 @@ def _parse_desktop(path: str) -> dict | None:
     name = s.get("name", "").strip()
     if not name:
         return None
+    # Slugified names like "LM-Studio" or "my_app" — convert separators to spaces.
+    if " " not in name and re.search(r"[-_]", name):
+        name = re.sub(r"[-_]+", " ", name)
     return {
         "id": os.path.basename(path),
         "name": name,
@@ -105,7 +117,10 @@ class AppLauncher:
 
     def refresh(self) -> None:
         apps: dict[str, dict] = {}
-        for directory in _DESKTOP_DIRS:
+        search_dirs = list(_DESKTOP_DIRS)
+        # Running AppImages mount themselves under /tmp/.mount_*; pick up their .desktop files.
+        search_dirs += glob.glob("/tmp/.mount_*/")
+        for directory in search_dirs:
             for path in glob.glob(os.path.join(directory, "*.desktop")):
                 app = _parse_desktop(path)
                 if app:
@@ -138,15 +153,22 @@ class AppLauncher:
 
     def find_app_for_window(self, wm_class: str, wm_class_group: str, app_name: str) -> str:
         """Return the best-matching app_id for an open window, or ''."""
-        candidates = {wm_class.lower(), wm_class_group.lower(), app_name.lower()} - {""}
-        # 1. Exact StartupWMClass match
+        raw = {wm_class.lower(), wm_class_group.lower(), app_name.lower()} - {""}
+        # Normalised variants: treat hyphen, underscore, and space as equivalent.
+        candidates = set()
+        for s in raw:
+            candidates.add(s)
+            candidates.add(re.sub(r"[-_ ]+", "-", s))
+            candidates.add(re.sub(r"[-_ ]+", "_", s))
+            candidates.add(re.sub(r"[-_ ]+", " ", s))
+        # 1. Exact/normalised StartupWMClass match
         for app_id, app in self._apps.items():
             wmc = app.get("wm_class", "").lower()
-            if wmc and wmc in candidates:
+            if wmc and (wmc in candidates or re.sub(r"[-_ ]+", "-", wmc) in candidates):
                 return app_id
-        # 2. Desktop file stem matches wm_class / app_name
+        # 2. Desktop file stem matches wm_class / app_name (normalised)
         for app_id, app in self._apps.items():
-            stem = app_id.removesuffix(".desktop").lower()
+            stem = re.sub(r"[-_ ]+", "-", app_id.removesuffix(".desktop").lower())
             if stem and stem in candidates:
                 return app_id
         # 3. App display name matches app_name case-insensitively

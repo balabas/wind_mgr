@@ -100,6 +100,7 @@ class RelationshipTree:
                         name = (custom_name
                                 or r.metadata.get("domain")
                                 or r.app_name
+                                or r.wm_class_group
                                 or (r.title[:20] if r.title else ""))
                 else:
                     root = self._reg.get(int(pid)) if pid.isdigit() else None
@@ -107,6 +108,7 @@ class RelationshipTree:
                         name = (custom_name
                                 or root.metadata.get("domain")
                                 or root.app_name
+                                or root.wm_class_group
                                 or root.title[:20])
                     else:
                         name = custom_name
